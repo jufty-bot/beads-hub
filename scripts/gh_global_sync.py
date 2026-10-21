@@ -285,21 +285,21 @@ class Beads:
             bead["status"] = status
         return bead
 
-    def links(self, pr: Json, desired: set[str]) -> None:
-        """Reconcile only hub-owned blocking edges, retaining preexisting manual dependencies."""
+    def links(self, pr: Json, desired: set[str], *, cache: dict[str, set[str]]) -> None:
+        """Reconcile owned edges using a pass-local graph cache; retain manual dependencies."""
         hub = dict(pr["metadata"]["hub"])
         owned = set(hub.get("blocking_issues", []))
-        present = {
-            issue_id
-            for issue_id in desired | owned
-            if any(
-                dep["id"] == pr["id"]
-                for dep in self.call("dep", "list", issue_id, "--type", "blocks") or []
-            )
-        }
+        for issue_id in desired | owned:
+            if issue_id not in cache:
+                cache[issue_id] = {
+                    dep["id"]
+                    for dep in self.call("dep", "list", issue_id, "--type", "blocks") or []
+                }
+        present = {issue_id for issue_id in desired | owned if pr["id"] in cache[issue_id]}
         for issue_id in sorted(owned - desired):
             if issue_id in present:
                 self.call("dep", "remove", issue_id, pr["id"])
+                cache[issue_id].remove(pr["id"])
             owned.remove(issue_id)
             hub["blocking_issues"] = sorted(owned)
             self.metadata(pr, hub)
@@ -312,6 +312,7 @@ class Beads:
             self.metadata(pr, hub)
         for issue_id in sorted((desired & owned) - present):
             self.call("dep", "add", issue_id, pr["id"])
+            cache[issue_id].add(pr["id"])
 
 
 def reconcile(
@@ -337,8 +338,11 @@ def reconcile(
     existing = beads.items()
     by_node: dict[str, Json] = {}
     by_ref: dict[str, Json] = {}
+    by_repo: dict[str, list[Json]] = {}
     for bead in existing:
         hub = (bead.get("metadata") or {}).get("hub") or {}
+        if hub.get("repo_id"):
+            by_repo.setdefault(hub["repo_id"], []).append(bead)
         node_id = hub.get("node_id")
         if node_id:
             if node_id in by_node:
@@ -355,11 +359,7 @@ def reconcile(
         since = None if force_full else state.since(repo, now=started)
         summary["modes"][repo["full_name"]] = "delta" if since else "full"
         try:
-            local = [
-                bead
-                for bead in existing
-                if (bead.get("metadata") or {}).get("hub", {}).get("repo_id") == repo["node_id"]
-            ]
+            local = by_repo.get(repo["node_id"], [])
             prs = [
                 bead
                 for bead in local
@@ -413,14 +413,15 @@ def reconcile(
             pending[repo["node_id"]] = (repo, started, since is None)
         except RateLimited as error:
             state.data["retry_at"] = error.retry_at
-            state.failure(repo, str(error))
+            state.mark_failure(repo, str(error))
             summary["errors"].append(f"{repo['full_name']}: {error}")
             summary["retry_at"] = error.retry_at
             break
         except (KeyError, ValueError, TypeError, RuntimeError, subprocess.TimeoutExpired) as error:
             failed.add(repo["node_id"])
-            state.failure(repo, str(error))
+            state.mark_failure(repo, str(error))
             summary["errors"].append(f"{repo['full_name']}: {error}")
+    dependencies: dict[str, set[str]] = {}
     for item, bead in active_prs:
         try:
             targets = {
@@ -428,16 +429,17 @@ def reconcile(
                 for link in item["closingIssuesReferences"]["nodes"]
                 if link["id"] in by_node and by_node[link["id"]]["status"] != "closed"
             }
-            beads.links(bead, targets)
+            beads.links(bead, targets, cache=dependencies)
         except (KeyError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             repo_id = item["repository"]["id"]
             failed.add(repo_id)
             if repo_id in pending:
-                state.failure(pending[repo_id][0], str(error))
+                state.mark_failure(pending[repo_id][0], str(error))
             summary["errors"].append(f"{source_ref(item)} dependencies: {error}")
     for repo_id, (repo, started, full) in pending.items():
         if repo_id not in failed:
-            state.success(repo, started=started, finished=time.time(), full=full)
+            state.mark_success(repo, started=started, finished=time.time(), full=full)
+    state.save()
     if summary["errors"]:
         summary["status"] = "partial"
     summary["writes"] = beads.writes - before_writes

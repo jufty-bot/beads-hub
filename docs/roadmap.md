@@ -6,7 +6,7 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | --- | --- | --- |
 | Standalone Beads repository | Implemented in [jufty-bot/beads-hub](https://github.com/jufty-bot/beads-hub) | Independent implementation history; no SQLite migration |
 | Multi-repository issue/PR sync | Implemented with GitHubKit, overlapping incremental cursors, node identities, and hourly full repairs | Bootstrap covers open work; deltas include changed closed records; credential visibility applies |
-| Continuous lifecycle convergence | Implemented with independent PR signal refresh, replay after partial failures, and explicit closure verification | Serial writes; optional 2–4 read workers; unchanged data avoids writes |
+| Continuous lifecycle convergence | Implemented with independent PR signal refresh, replay after partial failures, and explicit closure verification | Serial writes; optional 2–4 read workers; repository indexes, pass-local graph reads, and one progress commit per pass |
 | GitHub progress visibility | Implemented in atomic shared-volume JSON state and `task sync-status` | Last successful coverage/errors per repository and durable rate cooldowns; database health alone is insufficient |
 | Automatic freshness alerts | Pending | Alert on stale/failed source coverage independently of database health |
 | Informative GitHub metadata | Implemented in `metadata.hub.github` and description summaries | Selected source facts; bounded reviewer details, no conversations/diffs |
@@ -14,7 +14,7 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | PR signal triage and closing dependencies | Implemented | Latest signals, indexed closing targets, GitHub's recognized references |
 | Shared CLI, UI, official MCP | Implemented | Trusted clients; one database |
 | Unified image and Docker Compose deployment | Implemented | Four services, one persistent volume, localhost ports; operator supplies runtime credentials |
-| Runtime and regression validation | 73 offline tests, Compose validation, and ARM64 Compose smoke pass, including incremental state, zero-write repeated sync, UI/MCP, remote SQL, and restart persistence | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
+| Runtime and regression validation | 76 offline tests, operation-count regressions, Compose validation, and ARM64 Compose smoke pass, including incremental state, zero-write repeated sync, UI/MCP, remote SQL, and restart persistence | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
 | Live multi-repository pilot | Pending | Needs an authorized GitHub credential and Docker host |
 | Backup/restore exercise | Pending | Requires storage/backup selection and a disposable restore target |
 

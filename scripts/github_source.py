@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -151,9 +152,7 @@ def node_metadata(node: Json) -> Json:
 class GitHub:
     """Use a synchronous SDK client so CLI and MCP share the same reconciliation lifecycle."""
 
-    def __init__(
-        self, client: Client[Any] | None = None, *, workers: int = 1, retry_at: float = 0
-    ) -> None:
+    def __init__(self, client: Client[Any] | None = None, *, workers: int = 1) -> None:
         """Accept a test client or authenticate directly from the injected GH_TOKEN."""
         if not 1 <= workers <= 4:
             raise ValueError("GH_SYNC_WORKERS must be between 1 and 4")
@@ -166,7 +165,7 @@ class GitHub:
             )
         self.client = client
         self.workers = workers
-        self.retry_at = retry_at
+        self.retry_at: float = 0
         self.rate_lock = Lock()
 
     def check_rate(self) -> None:
@@ -180,7 +179,7 @@ class GitHub:
         with self.rate_lock:
             self.retry_at = max(self.retry_at, retry_at)
 
-    def observe_headers(self, headers: Any) -> None:
+    def observe_headers(self, headers: Mapping[str, str]) -> None:
         """Record a primary-budget reset even when the last allowed REST request succeeds."""
         if headers.get("x-ratelimit-remaining") == "0":
             self.defer(float(headers.get("x-ratelimit-reset", time.time() + 60)))
@@ -189,8 +188,7 @@ class GitHub:
         """Preserve rate-limit deadlines and keep arbitrary API error bodies out of logs."""
         deadline = time.time() + 60
         limited = isinstance(error, RateLimitExceeded)
-        if limited:
-            assert isinstance(error, RateLimitExceeded)
+        if isinstance(error, RateLimitExceeded):
             deadline = time.time() + max(60, error.retry_after.total_seconds())
         if isinstance(error, RequestFailed):
             headers = error.response.headers

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,9 @@ def test_bootstrap_then_delta_survives_restart(tmp_path: Path) -> None:
     assert result["modes"] == {"example/orbit": "delta"}
     since = source.since_calls[-1]
     assert since is not None
-    assert datetime.fromisoformat(since).timestamp() == committed["checkpoint"] - OVERLAP_SECONDS
+    assert datetime.fromisoformat(since).timestamp() == pytest.approx(
+        committed["checkpoint"] - OVERLAP_SECONDS, rel=0, abs=1e-6
+    )
     assert source.node_calls == []
     assert beads.rows["hub-1"]["status"] == "open"
     assert not path.with_suffix(".tmp").exists()
@@ -75,7 +78,7 @@ def test_failures_replay_without_advancing_checkpoint(
             raise RuntimeError("Synthetic database failure")
         return call(*args)
 
-    def fail_dependency(pr: sync.Json, desired: set[str]) -> None:
+    def fail_dependency(pr: sync.Json, desired: set[str], *, cache: dict[str, set[str]]) -> None:
         """Reject graph convergence after source-owned fields were persisted."""
         raise RuntimeError("Synthetic dependency failure")
 
@@ -165,10 +168,11 @@ def test_delta_imports_work_created_and_closed_between_polls(tmp_path: Path) -> 
 def test_rename_requires_full_repair_even_after_failed_attempt(tmp_path: Path) -> None:
     """A failed rename refresh cannot make old repository metadata look fully reconciled."""
     state = SyncState(tmp_path / "progress.json")
-    state.success(repository(), started=1000, finished=1001, full=True)
+    state.mark_success(repository(), started=1000, finished=1001, full=True)
     renamed = repository("example/renamed")
     assert state.since(renamed, now=1100) is None
-    state.failure(renamed, "Synthetic failure")
+    state.mark_failure(renamed, "Synthetic failure")
+    state.save()
     assert SyncState(state.path).since(renamed, now=1200) is None
 
 
@@ -209,3 +213,56 @@ def test_checkpoint_replace_failure_replays_committed_beads(
     assert beads.rows["hub-1"]["title"].endswith("New source title")
     assert sync.reconcile(source, beads, "user:@me", replay)["writes"] == 0
     assert SyncState(path).data["repositories"]["R_1"]["checkpoint"] > checkpoint
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_progress_is_committed_once_per_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed: bool,
+) -> None:
+    """Many repository results need one durable replacement, including partial passes."""
+    repos = [repository(f"example/repo-{number}", f"R_{number}") for number in range(3)]
+    source = FixtureGitHub([item(repo=repo) for repo in repos], repos=repos)
+    if failed:
+        source.failed_repos.add("R_0")
+    state, beads = SyncState(tmp_path / "progress.json"), MemoryBeads()
+    original_replace = os.replace
+    replacements = 0
+
+    def count_replace(source: Path, target: Path) -> None:
+        """Count durable commits while performing real atomic file replacement."""
+        nonlocal replacements
+        replacements += 1
+        original_replace(source, target)
+
+    monkeypatch.setattr("sync_state.os.replace", count_replace)
+    result = sync.reconcile(source, beads, "user:@me", state)
+    assert result["status"] == ("partial" if failed else "complete")
+    assert replacements == 1
+    saved = SyncState(state.path)
+    assert all(saved.data["repositories"][repo["node_id"]]["last_success_at"] for repo in repos[1:])
+    if failed:
+        assert "checkpoint" not in saved.data["repositories"]["R_0"]
+    state.save()
+    saved.save()
+    assert replacements == 1
+
+
+def test_shared_issue_dependencies_are_read_once_per_pass() -> None:
+    """A shared issue needs one graph read while all PR edges remain independently repairable."""
+    issue = item()
+    prs = [item("pr", number=number) for number in range(2, 5)]
+    for pr in prs:
+        pr["closingIssuesReferences"]["nodes"] = [{"id": issue["id"]}]
+    source, beads = FixtureGitHub([issue, *prs]), MemoryBeads()
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    reads = [args for args in beads.calls if args[:2] == ("dep", "list")]
+    assert len(reads) == 1
+    expected = {("hub-1", f"hub-{number}") for number in range(2, 5)}
+    assert beads.edges == expected
+    beads.edges.clear()
+    beads.calls.clear()
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert len([args for args in beads.calls if args[:2] == ("dep", "list")]) == 1
+    assert beads.edges == expected

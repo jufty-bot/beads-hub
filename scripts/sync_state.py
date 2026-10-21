@@ -22,6 +22,7 @@ class SyncState:
     def __init__(self, path: Path | None = None) -> None:
         """Load existing progress, or start a full bootstrap without creating a database."""
         self.path = path
+        self._saved: str | None = None
         self.data: dict[str, Any] = {"version": 1, "repositories": {}, "retry_at": 0}
         if path is not None and path.exists():
             data = json.loads(path.read_text())
@@ -38,6 +39,7 @@ class SyncState:
                     self.timestamp(entry.get(field, 0))
             self.timestamp(data.get("retry_at", 0))
             self.data = data
+            self._saved = json.dumps(data, sort_keys=True) + "\n"
 
     @staticmethod
     def timestamp(value: Any) -> float:
@@ -67,31 +69,33 @@ class SyncState:
             return None
         return datetime.fromtimestamp(max(0, checkpoint - OVERLAP_SECONDS), UTC).isoformat()
 
-    def success(self, repo: dict[str, Any], *, started: float, finished: float, full: bool) -> None:
-        """Commit coverage only after source reads, Beads writes, and dependencies succeed."""
+    def mark_success(
+        self, repo: dict[str, Any], *, started: float, finished: float, full: bool
+    ) -> None:
+        """Stage successful coverage for the pass's final atomic save."""
         entry = self.data["repositories"].setdefault(repo["node_id"], {})
         entry.update(
             name=repo["full_name"], checkpoint=started, last_success_at=finished, error=None
         )
         if full:
             entry["last_full_at"] = started
-        self.save()
 
-    def failure(self, repo: dict[str, Any], message: str) -> None:
-        """Keep the last good checkpoint while recording a failed repository pass."""
+    def mark_failure(self, repo: dict[str, Any], message: str) -> None:
+        """Stage an error without advancing the repository's last good checkpoint."""
         entry = self.data["repositories"].setdefault(repo["node_id"], {})
         entry.setdefault("name", repo["full_name"])
         entry["error"] = message
-        self.save()
 
     def save(self) -> None:
-        """Atomically replace progress so a crash leaves a complete old or new document."""
+        """Atomically commit changed progress, leaving a complete old or new document on disk."""
         if self.path is None:
+            return
+        content = json.dumps(self.data, sort_keys=True) + "\n"
+        if content == self._saved:
             return
         temporary = self.path.with_suffix(".tmp")
         with temporary.open("w") as stream:
-            json.dump(self.data, stream, sort_keys=True)
-            stream.write("\n")
+            stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, self.path)
@@ -100,3 +104,4 @@ class SyncState:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        self._saved = content
