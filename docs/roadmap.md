@@ -4,7 +4,7 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 
 | Capability | Current status | Boundary |
 | --- | --- | --- |
-| Fresh independent branch | Implemented | No SQLite migration |
+| Standalone Beads repository | Implemented in [jufty-bot/beads-hub](https://github.com/jufty-bot/beads-hub) | Independent implementation history; no SQLite migration |
 | Multi-repository issue/PR sync | Implemented with repository pagination and node identities | Full open-item polling; credential visibility applies |
 | Source and local triage separation | Implemented | Classification is supplied by humans/agents |
 | PR signal triage and closing dependencies | Implemented | Latest signals, indexed closing targets, GitHub's recognized references |

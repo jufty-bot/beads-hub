@@ -1,6 +1,6 @@
 # Implementation and validation checklist
 
-- [x] Start `beads-hub` as an orphan branch; retain the original implementation on `chilly-ostrich`.
+- [x] Publish the clean Beads implementation history as `main` in [jufty-bot/beads-hub](https://github.com/jufty-bot/beads-hub); retain the earlier application and history in [gh-maintainer](https://github.com/jufty-bot/gh-maintainer).
 - [x] Implement paginated repository scopes and issue/PR reconciliation in `scripts/gh_global_sync.py`.
 - [x] Preserve source identities, local categories/priority/claims/notes, and unrelated metadata; explicit closure and reopening.
 - [x] Implement actionable PR signals, cross-repository blockers, removed-reference cleanup, and manual-edge preservation.

@@ -2,7 +2,7 @@
 
 ## Start a separate Beads implementation
 
-The `beads-hub` orphan branch replaces the SQLite application with a Beads-backed shared backlog. No earlier application files or migration contracts carry into this design. Existing history remains on the original branch. This lets the new workflow be evaluated independently without claiming compatibility with earlier state.
+The standalone [beads-hub repository](https://github.com/jufty-bot/beads-hub) contains the Beads-backed shared backlog and its clean implementation history. The earlier SQLite application and its history remain in [gh-maintainer](https://github.com/jufty-bot/gh-maintainer). No earlier application files or migration contracts carry into this design. This lets the new workflow be evaluated independently without claiming compatibility with earlier state.
 
 ## Use upstream interfaces and pin the tested releases
 

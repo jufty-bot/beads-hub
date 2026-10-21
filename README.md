@@ -33,4 +33,4 @@ Inject `GH_TOKEN` and `BEADS_REMOTE_PASSWORD` into your shell environment, set `
 - [Design decisions](docs/decisions.md)
 - [Roadmap](docs/roadmap.md) and [validation checklist](docs/checklist.md)
 
-This is a fresh design on the orphan `beads-hub` branch. It does not migrate the earlier gh-maintainer SQLite application. The previous implementation remains on its original branch.
+This standalone project began as a redesign of [gh-maintainer](https://github.com/jufty-bot/gh-maintainer). Its history contains only the Beads implementation. It does not migrate the earlier SQLite application, which remains in gh-maintainer.
