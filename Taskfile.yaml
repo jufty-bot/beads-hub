@@ -1,0 +1,60 @@
+version: '3'
+
+vars:
+  IMAGE: beads-hub:test
+  NAMESPACE: beads-hub
+
+tasks:
+  install:
+    desc: Install the locked development environment
+    cmds: [uv sync --locked]
+  lock:
+    desc: Refresh the Python lockfile
+    cmds: [uv lock]
+  fix:
+    desc: Format and fix lint findings
+    cmds:
+      - uv run --locked ruff check --fix .
+      - uv run --locked ruff format .
+  lint:
+    desc: Check Python and shell formatting and syntax
+    cmds:
+      - uv run --locked ruff check .
+      - uv run --locked ruff format --check .
+      - bash -n scripts/*.sh
+  check:
+    desc: Check Python types
+    cmds: [uv run --locked mypy]
+  test:
+    desc: Run token-free reconciliation and integration tests
+    cmds: ['uv run --locked pytest {{.CLI_ARGS}}']
+  smoke:
+    desc: Build and exercise a disposable Dolt, UI, MCP, and synthetic GitHub stack
+    deps: [build]
+    cmds: ['bash scripts/smoke.sh {{.IMAGE}}']
+  run:
+    desc: Run a command in the project environment
+    cmds: ['uv run --locked {{.CLI_ARGS}}']
+  build:
+    desc: Build the unified image locally
+    cmds: ['docker build -t {{.IMAGE}} .']
+  push:
+    desc: Push the explicitly selected image
+    cmds: ['docker push {{.IMAGE}}']
+  manifests:
+    desc: Render the base Kubernetes manifests
+    cmds: [kubectl kustomize k8s/]
+  validate:
+    desc: Validate manifests against the selected cluster without applying them
+    cmds: [kubectl apply --dry-run=client -k k8s/]
+  deploy:
+    desc: Deploy the base workload (configure its image, scope, and Secret first)
+    cmds: [kubectl apply -k k8s/]
+  sync-now:
+    desc: Run one reconciliation using the shared sync lock
+    cmds:
+      - kubectl exec -n {{.NAMESPACE}} statefulset/beads-hub -c github-reconciler -- python3 /usr/local/bin/gh_global_sync.py
+  port-forward:
+    desc: Forward UI, MCP, and Dolt to localhost
+    cmds:
+      - kubectl port-forward -n {{.NAMESPACE}} svc/beads-hub 3000:3000 8080:8080 3307:3307

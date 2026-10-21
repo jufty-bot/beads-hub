@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: beads-hub
+spec:
+  serviceName: beads-hub-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beads-hub
+  template:
+    metadata:
+      labels:
+        app: beads-hub
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: dolt
+          image: beads-hub:test
+          args: [/usr/local/bin/entrypoint-dolt.sh]
+          envFrom:
+            - configMapRef:
+                name: beads-hub
+          ports:
+            - name: dolt-sql
+              containerPort: 3307
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/beads
+          startupProbe:
+            tcpSocket:
+              port: dolt-sql
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: dolt-sql
+          livenessProbe:
+            tcpSocket:
+              port: dolt-sql
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+        - name: hub
+          image: beads-hub:test
+          args: [/usr/local/bin/entrypoint-hub.sh]
+          envFrom:
+            - configMapRef:
+                name: beads-hub
+          env:
+            - name: BEADS_REMOTE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: beads-dolt-auth
+                  key: password
+          ports:
+            - name: http-ui
+              containerPort: 3000
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/beads
+          startupProbe:
+            httpGet:
+              path: /
+              port: http-ui
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http-ui
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http-ui
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+        - name: beads-mcp
+          image: beads-hub:test
+          args: [/usr/local/bin/entrypoint-mcp.py]
+          envFrom:
+            - configMapRef:
+                name: beads-hub
+          env:
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: beads-github-auth
+                  key: GH_TOKEN
+          ports:
+            - name: http-mcp
+              containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/beads
+          startupProbe:
+            tcpSocket:
+              port: http-mcp
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            tcpSocket:
+              port: http-mcp
+          livenessProbe:
+            tcpSocket:
+              port: http-mcp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+        - name: github-reconciler
+          image: beads-hub:test
+          args: [python3, /usr/local/bin/gh_global_sync.py, --loop, --interval, '120']
+          envFrom:
+            - configMapRef:
+                name: beads-hub
+          env:
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: beads-github-auth
+                  key: GH_TOKEN
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/beads
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: beads-hub-data
