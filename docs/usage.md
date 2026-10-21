@@ -36,7 +36,7 @@ The hub starts with a full open-item inventory, then polls changed issues/PRs in
 | Closed/referenced PR no longer blocks an issue | Closed blockers cease blocking through Beads; removed references prune hub-owned edges |
 | Temporary API failure or downtime | Retain the previous snapshot; retry on later polls or after restart |
 
-After bootstrap, all-state deltas can discover an item created and closed entirely between polls. Old closed history predating bootstrap is not imported, and this is not a complete event history. Local Beads closes do not prevent upstream closure verification. A missing or inaccessible source is never proof of closure.
+After bootstrap, all-state deltas can discover an item created and closed entirely between polls. Hourly, rename, and `--full` repairs retain that delta read alongside the full open inventory, so a repair does not skip terminal updates while advancing the checkpoint. Both reads must succeed before writes. Repairs after a long outage may therefore read a larger range of changed closed work. Old closed history predating bootstrap is not imported, and this is not a complete event history. Local Beads closes do not prevent upstream closure verification. A missing or inaccessible source is never proof of closure.
 
 ## Deploy with Docker Compose
 

@@ -87,7 +87,12 @@ class FixtureGitHub(GitHub):
         return self.repos
 
     def items(
-        self, repo: sync.Json, *, since: str | None = None, prs: list[sync.Json] | None = None
+        self,
+        repo: sync.Json,
+        *,
+        since: str | None = None,
+        prs: list[sync.Json] | None = None,
+        full: bool = False,
     ) -> list[sync.Json]:
         """Return staged changes and current PR evidence, failing before any Beads writes."""
         self.since_calls.append(since)

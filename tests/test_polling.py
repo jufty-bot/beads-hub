@@ -170,10 +170,23 @@ def test_rename_requires_full_repair_even_after_failed_attempt(tmp_path: Path) -
     state = SyncState(tmp_path / "progress.json")
     state.mark_success(repository(), started=1000, finished=1001, full=True)
     renamed = repository("example/renamed")
-    assert state.since(renamed, now=1100) is None
+    assert state.needs_full(renamed, now=1100)
     state.mark_failure(renamed, "Synthetic failure")
     state.save()
-    assert SyncState(state.path).since(renamed, now=1200) is None
+    assert SyncState(state.path).needs_full(renamed, now=1200)
+    since = state.since(renamed, now=1200)
+    assert since is not None
+    assert datetime.fromisoformat(since).timestamp() == 1000 - OVERLAP_SECONDS
+
+
+def test_clock_rollback_repairs_and_rewinds_delta() -> None:
+    """A future checkpoint requires a full scan without discarding all-state coverage."""
+    state = SyncState()
+    state.mark_success(repository(), started=2000, finished=2001, full=True)
+    assert state.needs_full(repository(), now=1000)
+    since = state.since(repository(), now=1000)
+    assert since is not None
+    assert datetime.fromisoformat(since).timestamp() == 1000 - OVERLAP_SECONDS
 
 
 @pytest.mark.parametrize("value", [True, -1, float("nan"), "not-a-timestamp"])

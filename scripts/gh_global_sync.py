@@ -356,8 +356,9 @@ def reconcile(
     failed: set[str] = set()
     for repo in repos:
         started = time.time()
-        since = None if force_full else state.since(repo, now=started)
-        summary["modes"][repo["full_name"]] = "delta" if since else "full"
+        since = state.since(repo, now=started)
+        full = force_full or state.needs_full(repo, now=started)
+        summary["modes"][repo["full_name"]] = "full" if full else "delta"
         try:
             local = by_repo.get(repo["node_id"], [])
             prs = [
@@ -366,11 +367,11 @@ def reconcile(
                 if bead["metadata"]["hub"].get("kind") == "pr"
                 and bead["metadata"]["hub"].get("source_state") == "OPEN"
             ]
-            items = github.items(repo, since=since, prs=prs)
+            items = github.items(repo, since=since, prs=prs, full=full)
             for item in items:
                 validate_item(item)
             closing: list[tuple[Json, Json]] = []
-            if since is None:
+            if full:
                 seen = {item["id"] for item in items}
                 missing = {
                     bead["metadata"]["hub"]["node_id"]: bead
@@ -410,7 +411,7 @@ def reconcile(
             for item, bead in closing:
                 beads.close_source(bead, item)
                 summary["closed"] += 1
-            pending[repo["node_id"]] = (repo, started, since is None)
+            pending[repo["node_id"]] = (repo, started, full)
         except RateLimited as error:
             state.data["retry_at"] = error.retry_at
             state.mark_failure(repo, str(error))
