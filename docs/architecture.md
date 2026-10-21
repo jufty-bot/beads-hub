@@ -40,6 +40,8 @@ The description shows a compact source summary before the GitHub body. Each succ
 
 `hub:manual-status` opts out of automatic open/in-progress selection. A changed status is also recognized by comparing it to `synced_status`. Upstream reopening restores an item previously closed by sync; a retained claim resumes in progress. Local close while GitHub is open remains local. Source-only edits belong in GitHub, since sync refreshes them.
 
+Closing a bead locally does not stop source-state verification: if it later disappears from the open inventory, the hub still checks GitHub and records an authoritative closure or merge. An item already confirmed closed upstream is left alone on subsequent polls unless it reappears open.
+
 ## PR readiness
 
 All imports are Beads tasks distinguished by `type:issue` or `type:pr`. PRs with failing/error checks, unknown checks, conflicts, unknown mergeability, requested changes, or missing approval on a non-draft PR are `open`. Signal labels explain the reason. Other PRs are `in_progress`; pending checks are labeled `ci:pending` and draft PRs `draft:true`. Missing checks mean unknown, not passing. This deterministic policy is a triage aid, not proof that repository merge policy is satisfied.

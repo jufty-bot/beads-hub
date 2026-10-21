@@ -158,6 +158,60 @@ def test_absence_requires_explicit_closure_and_reopen() -> None:
     assert len(beads.rows) == 1 and beads.rows["hub-1"]["status"] == "open"
 
 
+def test_locally_closed_bead_still_observes_upstream_closure() -> None:
+    """A local close cannot suppress later authoritative GitHub state or merge evidence."""
+    row = item("pr")
+    source, beads = FixtureGitHub([row]), MemoryBeads()
+    sync.reconcile(source, beads, "user:@me")
+    bead = beads.rows["hub-1"]
+    bead["status"] = "closed"
+    source.rows = []
+    merged = copy.deepcopy(row)
+    merged["state"] = "MERGED"
+    merged["github"]["pull_request"]["merged_at"] = "2026-10-21T12:00:00Z"
+    source.states[row["id"]] = merged
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    hub = bead["metadata"]["hub"]
+    assert hub["source_state"] == "MERGED" and hub["synced_status"] == "closed"
+    assert hub["github"]["pull_request"]["merged_at"] == "2026-10-21T12:00:00Z"
+    source.rows = [row]
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert bead["status"] == "in_progress"
+
+
+def test_polling_converges_across_item_lifecycle() -> None:
+    """Repeated polls import new work and converge after updates, merges, and reopening."""
+    source, beads = FixtureGitHub([]), MemoryBeads()
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    issue, pr = item(), item("pr", number=2)
+    pr["reviewDecision"] = None
+    pr["closingIssuesReferences"]["nodes"] = [{"id": issue["id"]}]
+    source.rows = [issue, pr]
+    source.states = {row["id"]: copy.deepcopy(row) for row in source.rows}
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    issue_bead, pr_bead = beads.rows["hub-1"], beads.rows["hub-2"]
+    assert len(beads.rows) == 2 and beads.edges == {("hub-1", "hub-2")}
+    assert pr_bead["status"] == "open"
+    pr["reviewDecision"] = "APPROVED"
+    issue["title"] = "Updated upstream"
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert pr_bead["status"] == "in_progress"
+    assert issue_bead["title"].endswith("Updated upstream")
+    source.rows = []
+    source.states[issue["id"]]["state"] = "CLOSED"
+    source.states[pr["id"]]["state"] = "MERGED"
+    source.failed_repos.add("R_1")
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "partial"
+    assert issue_bead["status"] == "open" and pr_bead["status"] == "in_progress"
+    source.failed_repos.clear()
+    assert sync.reconcile(source, beads, "user:@me")["closed"] == 2
+    assert issue_bead["status"] == pr_bead["status"] == "closed"
+    source.rows = [issue]
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert issue_bead["status"] == "open" and pr_bead["status"] == "closed"
+    assert len(beads.rows) == 2
+
+
 def test_scope_change_preserves_other_repo() -> None:
     """A narrower sync never closes work from an excluded repository."""
     source, beads = FixtureGitHub([item()]), MemoryBeads()

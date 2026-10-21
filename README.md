@@ -17,6 +17,8 @@ flowchart LR
 
 Issues and PRs are peer tasks with `type:issue` / `type:pr` labels. Actionable PRs enter the open queue. GitHub closing references create dependencies so an open PR blocks its issue until the PR closes. Local labels such as `category:bug-fix` remain yours to manage.
 
+The reconciler runs continuously: it discovers open work, refreshes PR signals, and verifies upstream closures/merges on each successful pass. It pauses two minutes between passes by default (`GH_SYNC_INTERVAL` changes this). See [Usage](docs/usage.md#select-repositories) for freshness and coverage limits.
+
 ```sh
 task install
 task lint

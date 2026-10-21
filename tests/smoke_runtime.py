@@ -81,12 +81,14 @@ def main() -> None:
     merged = dict(pr, state="MERGED", mergedAt="2026-10-21T12:00:00Z")
     merged["github"] = node_metadata(merged)
     source.states[pr["id"]] = merged
+    beads.call("close", pr_id, "--reason", "Synthetic local close before upstream merge")
     assert reconcile(source, beads, "user:@me")["closed"] == 1
     closed = next(row for row in beads.items() if row["id"] == pr_id)
     assert closed["status"] == "closed"
     snapshot = closed["metadata"]["hub"]["github"]
     assert snapshot["pull_request"]["merged_at"] == "2026-10-21T12:00:00Z"
     assert snapshot["author"]["login"] == "synthetic-author"
+    assert closed["metadata"]["hub"]["source_state"] == "MERGED"
     source.rows = [issue, pr]
     assert reconcile(source, beads, "user:@me")["status"] == "complete"
     assert next(row for row in beads.items() if row["id"] == pr_id)["status"] == "in_progress"

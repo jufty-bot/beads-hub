@@ -25,7 +25,18 @@ Supported scopes:
 
 Archived and disabled repositories are excluded. Overlapping scopes deduplicate by repository node ID. Search qualifiers such as `is:open`, `label:`, or free text are rejected. These are inventory scopes, not arbitrary GitHub search queries. Both issues and PRs are always included. Visibility is limited to the credential; inaccessible or filtered-out items are never considered closed merely because they disappear.
 
-The hub polls full open-item inventories, then reads PR signals and all GitHub closing references. A new pass starts 120 seconds after the preceding pass ends. This is polling, not a fixed freshness SLA. Large portfolios may need a longer interval; edit the reconciler command in `compose.yaml`. Manual and MCP triggers share the same lock.
+The hub polls full open-item inventories, then reads PR signals and all GitHub closing references. It starts immediately after startup readiness and repeats automatically. A new pass starts 120 seconds after the preceding pass ends; set `GH_SYNC_INTERVAL` to another positive number of seconds before `task deploy` to change the pause. This is polling, not a fixed freshness SLA: source/API availability and the duration of the pass also affect lag. Manual and MCP triggers share the same lock.
+
+| GitHub change | Next successful poll |
+| --- | --- |
+| New or reopened open issue/PR | Import or refresh the same stable bead |
+| Edited title, labels, assignments, milestone | Refresh source-owned text and metadata |
+| New commits, CI results, or review decisions on an open PR | Refresh PR evidence, signal labels, and automatic readiness |
+| Imported issue closed or PR closed/merged | Verify state directly, then close the bead and save closure evidence |
+| Closed/referenced PR no longer blocks an issue | Closed blockers cease blocking through Beads; removed references prune hub-owned edges |
+| Temporary API failure or downtime | Retain the previous snapshot; retry on later polls or after restart |
+
+An item created and closed entirely between polls is not discovered by the open-item inventory. The hub tracks the current open backlog and terminal transitions of imported items; it does not ingest a complete event history. Local Beads closes do not prevent later upstream closure verification. A missing or inaccessible source is never proof of closure.
 
 ## Deploy with Docker Compose
 
@@ -38,6 +49,7 @@ Inject these variables through your shell or password manager before starting:
 | `BEADS_REMOTE_PASSWORD` | Required, nonempty password for the database-scoped remote SQL user `beads`; passed only to hub initialization |
 | `GH_TOKEN` | Read credential for selected repositories; passed only to MCP and the reconciler. Optional for offline UI/MCP use; sync reports an authentication failure when absent |
 | `GH_SYNC_QUERY` | Inventory scopes, defaults to `user:@me` |
+| `GH_SYNC_INTERVAL` | Positive pause in seconds between automatic passes, defaults to `120` |
 
 The GitHub credential needs metadata, issues, pull-request, checks, and commit-status read access to the selected repositories, including any private-repository and organization authorization. The Python source adapter authenticates directly through GitHubKit; GitHub CLI installation and `gh auth login` are not used by sync. Keep credentials out of source files, printed Compose configuration, and command history. `task validate` checks configuration with `docker compose config --quiet`, without printing environment values. Keep the same runtime environment available for operational tasks; Compose requires the SQL password when loading its configuration.
 
@@ -77,6 +89,8 @@ docker compose ps
 ```
 
 One-shot sync emits JSON and exits nonzero on `partial`; a periodic worker logs the same error result and retries after its interval. A `busy` result means the running pass holds the shared lock. Discovery failures stop the pass before writes. Repository failures allow other repositories to progress and preserve the failed repository's previous snapshots when its source reads fail. Database write failures may leave a partially applied repository; subsequent passes repair it. There is no transactional snapshot of GitHub or of the entire portfolio.
+
+Check reconciler logs for successful passes and investigate repeated `partial` results. A healthy database/container alone does not prove GitHub freshness: the current health check verifies database access. Each source snapshot's `metadata.hub.github.observed_at` records its observation time. No automated freshness alert is implemented. If near-immediate updates are needed, GitHub webhooks can trigger targeted refreshes, with periodic reconciliation retained to recover missed deliveries; that receiver is not implemented here.
 
 Use local labels for classification and standard Beads priority for ranking:
 

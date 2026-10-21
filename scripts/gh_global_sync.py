@@ -312,7 +312,10 @@ def reconcile(github: GitHub, beads: Beads, scopes: str) -> Json:
                 if (
                     hub.get("repo_id") == repo["node_id"]
                     and hub.get("node_id") not in seen
-                    and bead["status"] != "closed"
+                    and (
+                        bead["status"] != "closed"
+                        or hub.get("source_state") not in {"CLOSED", "MERGED"}
+                    )
                 ):
                     item = github.node(hub["node_id"])
                     item["kind"] = hub["kind"]

@@ -78,7 +78,7 @@ services:
   github-reconciler:
     <<: *runtime
     network_mode: service:dolt
-    command: [python3, /usr/local/bin/gh_global_sync.py, --loop, --interval, '120']
+    command: [python3, /usr/local/bin/gh_global_sync.py, --loop, --interval, '${GH_SYNC_INTERVAL:-120}']
     depends_on:
       hub:
         condition: service_healthy
