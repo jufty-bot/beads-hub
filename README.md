@@ -2,7 +2,7 @@
 
 A shared [Beads](https://github.com/gastownhall/beads) backlog for GitHub issues and pull requests across repositories. Categorize, prioritize, and claim either kind of work using the `bd` CLI, the official beads-mcp server, or [Beads UI](https://github.com/mantoni/beads-ui).
 
-GitHub supplies source text, labels, PR signals, and closure. Beads holds local categories, priorities, assignees, notes, and workflow decisions. Reconciliation reads GitHub; local edits never write back to GitHub.
+GitHubKit reads source text, labels, PR signals, and closure directly from GitHub. Each bead carries author, milestone, dates, and PR branch/review metadata. Beads holds local categories, priorities, assignees, notes, and workflow decisions. Local edits never write back to GitHub.
 
 ```mermaid
 flowchart LR

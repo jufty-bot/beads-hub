@@ -14,6 +14,7 @@ import urllib.request
 from fastmcp import Client
 from fixtures import FixtureGitHub, item, repository
 from gh_global_sync import Beads, reconcile
+from github_source import node_metadata
 from hub_runtime import wait_for_hub
 from websockets.asyncio.client import connect
 
@@ -32,6 +33,11 @@ def main() -> None:
     rows = {row["metadata"]["hub"]["kind"]: row for row in beads.items()}
     assert len(rows) == 2
     issue_id, pr_id = rows["issue"]["id"], rows["pr"]["id"]
+    snapshot = rows["pr"]["metadata"]["hub"]["github"]
+    assert snapshot["author"]["login"] == "synthetic-author"
+    assert snapshot["assignees"] == ["synthetic-assignee"]
+    assert snapshot["pull_request"]["head_sha"] == "a" * 40
+    assert "fix/synthetic -> main" in rows["pr"]["description"]
     ready = {row["id"] for row in beads.call("ready", "--limit", "0")}
     assert pr_id in ready and issue_id not in ready
     source.rows = [pr]
@@ -55,6 +61,8 @@ def main() -> None:
     )
     pr["reviewDecision"] = "APPROVED"
     pr["labels"] = ["new-label"]
+    pr["github"].update(assignees=[], milestone=None, comment_count=5)
+    pr["github"]["pull_request"].update(requested_reviewers=[], requested_reviewers_total=0)
     pr["closingIssuesReferences"]["nodes"] = []
     assert reconcile(source, beads, "user:@me")["status"] == "complete"
     ready = {row["id"] for row in beads.call("ready", "--limit", "0")}
@@ -63,12 +71,22 @@ def main() -> None:
     assert local["status"] == "in_progress" and local["assignee"]
     assert local["priority"] == 1 and local["notes"] == "Synthetic local reasoning"
     assert local["metadata"]["local"] == {"keep": True}
+    snapshot = local["metadata"]["hub"]["github"]
+    assert snapshot["assignees"] == [] and snapshot["milestone"] is None
+    assert snapshot["comment_count"] == 5
+    assert snapshot["pull_request"]["requested_reviewers"] == []
     assert "category:bug-fix" in local["labels"] and "github:new-label" in local["labels"]
     assert "review:needed" not in local["labels"]
     source.rows = [issue]
-    source.states[pr["id"]] = dict(pr, state="MERGED")
+    merged = dict(pr, state="MERGED", mergedAt="2026-10-21T12:00:00Z")
+    merged["github"] = node_metadata(merged)
+    source.states[pr["id"]] = merged
     assert reconcile(source, beads, "user:@me")["closed"] == 1
-    assert next(row for row in beads.items() if row["id"] == pr_id)["status"] == "closed"
+    closed = next(row for row in beads.items() if row["id"] == pr_id)
+    assert closed["status"] == "closed"
+    snapshot = closed["metadata"]["hub"]["github"]
+    assert snapshot["pull_request"]["merged_at"] == "2026-10-21T12:00:00Z"
+    assert snapshot["author"]["login"] == "synthetic-author"
     source.rows = [issue, pr]
     assert reconcile(source, beads, "user:@me")["status"] == "complete"
     assert next(row for row in beads.items() if row["id"] == pr_id)["status"] == "in_progress"
@@ -89,6 +107,7 @@ def main() -> None:
                     "issue/PR readiness",
                     "dependency removal",
                     "claims and local triage",
+                    "GitHub metadata refresh and clearing",
                     "upstream closure",
                     "upstream reopening",
                     "repository rename",

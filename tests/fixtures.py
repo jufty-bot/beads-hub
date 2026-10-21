@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 
 import gh_global_sync as sync
+from github_source import GitHub, node_metadata, source_metadata
 
 
 def repository(name: str = "example/orbit", node_id: str = "R_1") -> sync.Json:
@@ -15,8 +16,9 @@ def repository(name: str = "example/orbit", node_id: str = "R_1") -> sync.Json:
 def item(kind: str = "issue", number: int = 1, repo: sync.Json | None = None) -> sync.Json:
     """Create a source snapshot with approved, passing PR defaults."""
     repo = repo or repository()
-    return {
+    result = {
         "id": f"{repo['node_id']}_{kind}_{number}",
+        "__typename": "PullRequest" if kind == "pr" else "Issue",
         "kind": kind,
         "number": number,
         "title": "Synthetic work",
@@ -29,12 +31,46 @@ def item(kind: str = "issue", number: int = 1, repo: sync.Json | None = None) ->
         "mergeable": "MERGEABLE",
         "reviewDecision": "APPROVED",
         "headRefName": "fix/synthetic",
-        "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+        "headRefOid": "a" * 40,
+        "baseRefName": "main",
+        "baseRefOid": "b" * 40,
+        "mergeStateStatus": "CLEAN",
+        "updatedAt": "2026-10-20T12:00:00Z",
+        "closedAt": None,
+        "mergedAt": None,
+        "additions": 12,
+        "deletions": 3,
+        "changedFiles": 2,
+        "isCrossRepository": True,
+        "commits": {
+            "totalCount": 2,
+            "nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}],
+        },
+        "reviewRequests": {
+            "totalCount": 1,
+            "nodes": [{"requestedReviewer": {"__typename": "User", "login": "synthetic-reviewer"}}],
+        },
         "closingIssuesReferences": {"nodes": [], "pageInfo": {"hasNextPage": False}},
     }
+    result["github"] = {
+        **source_metadata(
+            {
+                "html_url": result["url"],
+                "user": {"login": "synthetic-author", "type": "User"},
+                "assignees": [{"login": "synthetic-assignee"}],
+                "created_at": "2026-10-19T12:00:00Z",
+                "updated_at": "2026-10-20T12:00:00Z",
+                "comments": 4,
+                "milestone": {"number": 1, "title": "Synthetic milestone", "state": "open"},
+            },
+            repo,
+        ),
+        **(node_metadata(result) if kind == "pr" else {}),
+    }
+    return result
 
 
-class FixtureGitHub(sync.GitHub):
+class FixtureGitHub(GitHub):
     """Supply staged source snapshots and explicit state verification failures."""
 
     def __init__(self, items: list[sync.Json], repos: list[sync.Json] | None = None) -> None:

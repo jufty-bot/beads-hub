@@ -1,12 +1,30 @@
 # Architecture and contracts
 
-`scripts/gh_global_sync.py` contains a read-only `GitHub` adapter, a `Beads` CLI adapter, and reconciliation policy. Runtime coordination lives in `hub_runtime.py` and the entrypoints. The official beads-mcp instance owns all standard tool schemas, resource registration, and workspace context handling. The hub wrapper adds one synchronous trigger; it does not reimplement official tools.
+`scripts/github_source.py` contains the read-only GitHubKit adapter. It uses synchronous REST and GraphQL calls, with SDK-managed authentication, HTTP sessions, and REST Link pagination; it does not invoke `gh`. `scripts/gh_global_sync.py` contains the `Beads` CLI adapter and reconciliation policy. Runtime coordination lives in `hub_runtime.py` and the entrypoints. The official beads-mcp instance owns all standard tool schemas, resource registration, and workspace context handling. The hub wrapper adds one synchronous trigger; it does not reimplement official tools.
 
 ## Storage and identity
 
 Compose's named `data` volume mounts at `/var/lib/beads` in every container. `.beads/metadata.json` points to the explicit `beads_hub` SQL database. Dolt's actual data directory is `/var/lib/beads/dolt`, outside `.beads`: precreating `.beads/dolt` before `bd init` is interpreted as a legacy workspace by Beads 1.3.1. The UI container initializes once after the external SQL listener is available. MCP waits for a successful `bd info`. All clients disable auto-start and use the one external server. `docker compose down` retains the volume for the next startup.
 
 External references use `gh:OWNER/REPO#issue:NUMBER` and `gh:OWNER/REPO#pr:NUMBER`. Beads IDs remain independent. Structured `metadata.hub` records GitHub node ID, repository node ID, source kind/number/state, last sync-owned status, and managed blocking-issue IDs. Stable node IDs prevent duplicates on repository renames; the external reference and repository label are refreshed. Duplicate existing identities fail the pass instead of choosing a row silently. All Beads lookups use `--all --limit 0 --flat --json`.
+
+### Source metadata
+
+`metadata.hub.github` holds selected source facts, distinct from local Beads fields:
+
+| Fields | Content |
+| --- | --- |
+| `url`, `author`, `author_association`, `assignees` | Upstream link, author login/type and relationship, GitHub assignee logins |
+| `milestone` | Number, title, state, due date, or null |
+| `created_at`, `updated_at`, `closed_at`, `state_reason` | Source dates and closure reason |
+| `comment_count`, `locked` | Conversation size and lock flag; no comment bodies |
+| `repository` | Visibility, default branch, primary language, stars, fork flag |
+| `observed_at` | UTC time of the source observation; GitHub's update date alone does not establish CI freshness |
+| `pull_request` | Draft, mergeability and merge state, review decision, latest CI state, head/base branch names and SHAs, additions/deletions/files/commits, cross-repository flag, merge date, requested reviewers |
+
+Requested reviewers include the first 100 entries, with `requested_reviewers_total` and `requested_reviewers_complete` making coverage explicit. User/bot logins and team organization/slug are selected; other reviewer types retain their type only. Closing-issue references are fully paginated independently of this bounded display metadata. Source profiles, emails, conversations, patches, and complete payloads are not imported.
+
+The description shows a compact source summary before the GitHub body. Each successful open-item read refreshes the source snapshot, including cleared assignments, milestone, and reviewers. A direct closure read refreshes closure/PR evidence and retains the last-known REST facts such as author and comment count. Already-closed items are not polled for later edits. Snapshot fields are observations, not a history or a guarantee that all fields were read simultaneously.
 
 ## Ownership
 
@@ -31,6 +49,8 @@ For an indexed closing issue, `bd dep add ISSUE_ID PR_ID` means the issue depend
 ## Failure and concurrency
 
 Repository inventories and REST open-item collections are fully paginated without using search. PR details include latest commit rollup, mergeability, review decision, draft flag, and closing references. Each repository's source reads, including verification of missing previously imported items, finish before its writes begin. GraphQL errors, inaccessible nodes, malformed records, and failed pages prevent that repository from being refreshed. Other repositories may succeed. Scopes are resolved before writes and do not authorize closing records outside the current inventory.
+
+GitHubKit uses an injected `GH_TOKEN`, a 30-second HTTP timeout, no persistent HTTP cache, and no automatic SDK retries. Rate limits, authentication failures, timeouts, and server errors fail the affected read; the next periodic pass is the retry boundary. Errors report endpoint context and exception type without copying GitHub response bodies. REST requests pin API version `2022-11-28`; GraphQL follows GitHub's live schema.
 
 The shared `.github-sync.lock` uses a nonblocking advisory `flock`. Periodic, shell-triggered, and synchronous MCP sync calls use it; concurrent triggers return `busy`. There are no background tasks holding MCP ContextVars and no process-wide working-directory changes. Each subprocess uses an explicit workspace. Human/agent Beads commands still run concurrently through Dolt; the sync lock serializes reconcilers, not every local user. Multi-command operations may partially apply on process/database failure and are retried on later polls.
 

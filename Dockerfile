@@ -7,7 +7,7 @@ ARG DOLT_VERSION=2.5.1
 ARG BEADS_UI_VERSION=0.12.6
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git python3 gh tini \
+    ca-certificates curl git python3 tini \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /usr/local/bin/uv
 
@@ -39,7 +39,6 @@ ENV PATH="/opt/beads-hub/.venv/bin:$PATH" \
     BEADS_DOLT_SERVER_PORT=3307 \
     BEADS_DOLT_AUTO_START=0 \
     BEADS_ACTOR=beads-hub \
-    GH_PROMPT_DISABLED=1 \
     BD_BIN=/usr/local/bin/bd
 WORKDIR /var/lib/beads
 EXPOSE 3000 3307 8080

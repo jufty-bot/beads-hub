@@ -5,12 +5,13 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | Capability | Current status | Boundary |
 | --- | --- | --- |
 | Standalone Beads repository | Implemented in [jufty-bot/beads-hub](https://github.com/jufty-bot/beads-hub) | Independent implementation history; no SQLite migration |
-| Multi-repository issue/PR sync | Implemented with repository pagination and node identities | Full open-item polling; credential visibility applies |
+| Multi-repository issue/PR sync | Implemented with GitHubKit REST/GraphQL, repository pagination, and node identities | Full open-item polling; injected token visibility applies |
+| Informative GitHub metadata | Implemented in `metadata.hub.github` and description summaries | Selected source facts; bounded reviewer details, no conversations/diffs |
 | Source and local triage separation | Implemented | Classification is supplied by humans/agents |
 | PR signal triage and closing dependencies | Implemented | Latest signals, indexed closing targets, GitHub's recognized references |
 | Shared CLI, UI, official MCP | Implemented | Trusted clients; one database |
 | Unified image and Docker Compose deployment | Implemented | Four services, one persistent volume, localhost ports; operator supplies runtime credentials |
-| Runtime and regression validation | 34 offline tests, Compose validation, and ARM64 Compose smoke pass, including UI data, MCP HTTP, remote SQL, and down/up persistence | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
+| Runtime and regression validation | 47 offline tests, Compose validation, and ARM64 Compose smoke pass, including metadata clearing, UI data, MCP HTTP, remote SQL, and down/up persistence | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
 | Live multi-repository pilot | Pending | Needs an authorized GitHub credential and Docker host |
 | Backup/restore exercise | Pending | Requires storage/backup selection and a disposable restore target |
 

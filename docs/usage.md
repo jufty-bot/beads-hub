@@ -39,7 +39,7 @@ Inject these variables through your shell or password manager before starting:
 | `GH_TOKEN` | Read credential for selected repositories; passed only to MCP and the reconciler. Optional for offline UI/MCP use; sync reports an authentication failure when absent |
 | `GH_SYNC_QUERY` | Inventory scopes, defaults to `user:@me` |
 
-The GitHub credential needs metadata, issues, pull-request, checks, and commit-status read access to the selected repositories, including any private-repository and organization authorization. Keep credentials out of source files, printed Compose configuration, and command history. `task validate` checks configuration with `docker compose config --quiet`, without printing environment values. Keep the same runtime environment available for operational tasks; Compose requires the SQL password when loading its configuration.
+The GitHub credential needs metadata, issues, pull-request, checks, and commit-status read access to the selected repositories, including any private-repository and organization authorization. The Python source adapter authenticates directly through GitHubKit; GitHub CLI installation and `gh auth login` are not used by sync. Keep credentials out of source files, printed Compose configuration, and command history. `task validate` checks configuration with `docker compose config --quiet`, without printing environment values. Keep the same runtime environment available for operational tasks; Compose requires the SQL password when loading its configuration.
 
 ```sh
 task validate
@@ -89,6 +89,10 @@ bd blocked --json
 ```
 
 GitHub labels appear as `github:<percent-encoded-name>` to avoid collisions with local categories and comma-based CLI filters. For example, `bug` becomes `github:bug` and `help wanted` becomes `github:help%20wanted`. The reconciler owns source title/description; put durable reasoning in Beads notes and comments. Beads priority and issue type are local choices (imports start as `task`, priority 2).
+
+Every bead also carries source facts under `metadata.hub.github`: author, upstream assignees, milestone, dates, comment count, repository details, and PR branch SHAs, size, reviewer requests, merge/review/CI state. Inspect these with `bd show <id> --json`; a short summary also appears in the description. GitHub assignees do not claim the bead. Repository grouping remains the `repo:OWNER/REPO` label, with stable repository identity in `metadata.hub.repo_id`.
+
+These are current observations, with an `observed_at` timestamp. Reviewer details are bounded to 100 with explicit total/coverage fields; comment bodies, diffs, and history are not imported. See [source metadata](architecture.md#source-metadata) for fields and freshness limits. API rate limits and network failures report a partial pass and retry on the next interval; the SDK does not sleep through a rate-limit reset.
 
 Only authoritative `closingIssuesReferences` create blockers. GitHub resolves supported closing keywords, including recognized cross-repository references; arbitrary mentions and text in non-closing contexts do not create dependencies. Linked issues must already be indexed by the selected scopes. Removing a reference removes only edges managed by the hub. Existing manual edges are retained. Closing a PR releases its blocking effect through Beads' normal readiness rules.
 

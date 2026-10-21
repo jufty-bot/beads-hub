@@ -18,6 +18,12 @@ The original draft used GraphQL search. GitHub search has a result cap and is no
 
 Source labels are namespaced and escaped. The hub updates its own label namespaces and metadata key while leaving local classification and triage intact. It uses source node identity for rename continuity. Upstream closure requires an explicit state read; a scope change, permission failure, or missing record does not imply closure. Claims and status overrides survive source refresh. See the [architecture contract](architecture.md) for field ownership and readiness policy.
 
+## Use GitHubKit for Python source access
+
+[GitHubKit](https://yanyongyu.github.io/githubkit/) supplies synchronous REST/GraphQL requests, token authentication, session handling, and REST Link pagination. It replaces subprocess calls to `gh api`; the image no longer requires GitHub CLI. We retain `bd` as the supported Beads interface. The SDK stays within the tested 0.16 minor series and its exact release is locked. Raw JSON is validated at our source boundary, keeping reconciliation independent of generated SDK model classes.
+
+The client disables persistent HTTP caching and automatic retries: a failed or throttled read preserves the last good snapshot and the periodic worker retries later. Closing-reference cursors remain explicit so repeated cursors fail visibly. Selected source facts live in `metadata.hub.github`, never local assignee/priority/notes. Reviewer detail is bounded with explicit coverage rather than adding unbounded review/conversation ingestion. These choices keep the hub a small snapshot reconciler.
+
 ## Use authoritative closing relationships
 
 GitHub's paginated `closingIssuesReferences` supplies the intended closure relationship. The hub does not parse arbitrary body mentions or code examples into blockers. Only indexed targets can receive edges. An issue depends on its PR, and Beads computes readiness without changing the issue's stored status to blocked. Managed dependency provenance permits stale-edge removal while preserving manual edges.
