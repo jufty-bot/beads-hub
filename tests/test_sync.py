@@ -21,9 +21,14 @@ class MemoryBeads(sync.Beads):
         """Start with an empty backlog and dependency graph."""
         self.rows: dict[str, sync.Json] = {}
         self.edges: set[tuple[str, str]] = set()
+        self.calls: list[tuple[str, ...]] = []
+        self.writes = 0
 
     def call(self, *args: str) -> Any:
         """Emulate the bd commands used by the adapter, rejecting unsupported calls."""
+        self.calls.append(args)
+        if args[0] in {"create", "update"} or args[:2] in {("dep", "add"), ("dep", "remove")}:
+            self.writes += 1
         if args[0] == "list":
             assert "--limit" in args and args[args.index("--limit") + 1] == "0"
             return copy.deepcopy(list(self.rows.values()))

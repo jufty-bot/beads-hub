@@ -79,21 +79,39 @@ class FixtureGitHub(GitHub):
         self.repos = repos or [repository()]
         self.states = {row["id"]: copy.deepcopy(row) for row in items}
         self.failed_repos: set[str] = set()
+        self.since_calls: list[str | None] = []
+        self.node_calls: list[str] = []
 
     def repositories(self, scopes: str) -> list[sync.Json]:
         """Return only repositories selected in this test."""
         return self.repos
 
-    def open_items(self, repo: sync.Json) -> list[sync.Json]:
-        """Fail before writes when a repository's pagination is incomplete."""
+    def items(
+        self, repo: sync.Json, *, since: str | None = None, prs: list[sync.Json] | None = None
+    ) -> list[sync.Json]:
+        """Return staged changes and current PR evidence, failing before any Beads writes."""
+        self.since_calls.append(since)
         if repo["node_id"] in self.failed_repos:
             raise ValueError("Synthetic partial page")
-        return copy.deepcopy(
+        rows = copy.deepcopy(
             [row for row in self.rows if row["repository"]["id"] == repo["node_id"]]
         )
+        seen = {row["id"] for row in rows}
+        for bead in prs or []:
+            node_id = bead["metadata"]["hub"]["node_id"]
+            if node_id not in seen:
+                node = self.node(node_id)
+                node["github"] = {**bead["metadata"]["hub"].get("github", {}), **node["github"]}
+                rows.append(node)
+        return rows
 
     def node(self, node_id: str) -> sync.Json:
         """Return explicit state, or report inaccessible data without implying closure."""
         if node_id not in self.states:
             raise ValueError("Synthetic unavailable node")
+        self.node_calls.append(node_id)
         return copy.deepcopy(self.states[node_id])
+
+    def nodes(self, node_ids: list[str]) -> dict[str, sync.Json]:
+        """Read synthetic nodes without a real SDK or worker threads."""
+        return {node_id: self.node(node_id) for node_id in node_ids}

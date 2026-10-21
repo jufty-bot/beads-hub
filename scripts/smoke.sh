@@ -48,4 +48,6 @@ compose up -d --wait --wait-timeout 180
 compose exec -T hub python3 /usr/local/bin/hub_runtime.py
 compose exec -T hub python3 -c \
   'import json, subprocess; assert len(json.loads(subprocess.check_output(["bd", "list", "--all", "--limit", "0", "--json"], text=True))) == 2'
+compose exec -T github-reconciler env PYTHONPATH=/usr/local/bin python3 -c \
+  'from pathlib import Path; from sync_state import SyncState; state = SyncState(Path("/var/lib/beads/.github-sync-state.json")); assert state.data["repositories"]["R_1"]["name"] == "example/renamed"; assert state.data["repositories"]["R_1"]["checkpoint"] > 0'
 echo 'Smoke checks passed, including remote pointer and persistent restart.'

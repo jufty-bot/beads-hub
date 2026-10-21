@@ -63,6 +63,7 @@ services:
     environment:
       GH_TOKEN: ${GH_TOKEN:-}
       GH_SYNC_QUERY: ${GH_SYNC_QUERY:-user:@me}
+      GH_SYNC_WORKERS: ${GH_SYNC_WORKERS:-1}
       MCP_TRANSPORT: ${MCP_TRANSPORT:-streamable-http}
     healthcheck:
       test:
@@ -85,6 +86,7 @@ services:
     environment:
       GH_TOKEN: ${GH_TOKEN:-}
       GH_SYNC_QUERY: ${GH_SYNC_QUERY:-user:@me}
+      GH_SYNC_WORKERS: ${GH_SYNC_WORKERS:-1}
     healthcheck:
       test: [CMD, bd, info, --json]
       interval: 30s

@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import urllib.request
+from pathlib import Path
 
 from fastmcp import Client
 from fixtures import FixtureGitHub, item, repository
 from gh_global_sync import Beads, reconcile
 from github_source import node_metadata
 from hub_runtime import wait_for_hub
+from sync_state import SyncState
 from websockets.asyncio.client import connect
 
 
@@ -28,8 +31,13 @@ def main() -> None:
     pr["reviewDecision"] = None
     pr["closingIssuesReferences"]["nodes"] = [{"id": issue["id"]}]
     source = FixtureGitHub([issue, pr])
-    assert reconcile(source, beads, "user:@me")["status"] == "complete"
-    assert reconcile(source, beads, "user:@me")["status"] == "complete"
+    progress = Path(os.environ["BEADS_WORKING_DIR"]) / ".github-sync-state.json"
+    state = SyncState(progress)
+    assert reconcile(source, beads, "user:@me", state)["status"] == "complete"
+    state = SyncState(progress)
+    result = reconcile(source, beads, "user:@me", state)
+    assert result["status"] == "complete" and result["writes"] == 0
+    assert result["modes"] == {"example/orbit": "delta"}
     rows = {row["metadata"]["hub"]["kind"]: row for row in beads.items()}
     assert len(rows) == 2
     issue_id, pr_id = rows["issue"]["id"], rows["pr"]["id"]
@@ -40,11 +48,11 @@ def main() -> None:
     assert "fix/synthetic -> main" in rows["pr"]["description"]
     ready = {row["id"] for row in beads.call("ready", "--limit", "0")}
     assert pr_id in ready and issue_id not in ready
-    source.rows = [pr]
+    source.rows = [dict(issue, state="CLOSED"), pr]
     source.states[issue["id"]] = dict(issue, state="CLOSED")
-    assert reconcile(source, beads, "user:@me")["closed"] == 1
+    assert reconcile(source, beads, "user:@me", state)["closed"] == 1
     source.rows = [issue, pr]
-    assert reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert reconcile(source, beads, "user:@me", state)["status"] == "complete"
     assert next(row for row in beads.items() if row["id"] == issue_id)["status"] == "open"
     beads.call(
         "update",
@@ -64,7 +72,7 @@ def main() -> None:
     pr["github"].update(assignees=[], milestone=None, comment_count=5)
     pr["github"]["pull_request"].update(requested_reviewers=[], requested_reviewers_total=0)
     pr["closingIssuesReferences"]["nodes"] = []
-    assert reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert reconcile(source, beads, "user:@me", state)["status"] == "complete"
     ready = {row["id"] for row in beads.call("ready", "--limit", "0")}
     assert issue_id in ready
     local = next(row for row in beads.items() if row["id"] == pr_id)
@@ -82,7 +90,7 @@ def main() -> None:
     merged["github"] = node_metadata(merged)
     source.states[pr["id"]] = merged
     beads.call("close", pr_id, "--reason", "Synthetic local close before upstream merge")
-    assert reconcile(source, beads, "user:@me")["closed"] == 1
+    assert reconcile(source, beads, "user:@me", state)["closed"] == 1
     closed = next(row for row in beads.items() if row["id"] == pr_id)
     assert closed["status"] == "closed"
     snapshot = closed["metadata"]["hub"]["github"]
@@ -90,13 +98,14 @@ def main() -> None:
     assert snapshot["author"]["login"] == "synthetic-author"
     assert closed["metadata"]["hub"]["source_state"] == "MERGED"
     source.rows = [issue, pr]
-    assert reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert reconcile(source, beads, "user:@me", state)["status"] == "complete"
     assert next(row for row in beads.items() if row["id"] == pr_id)["status"] == "in_progress"
     renamed = repository("example/renamed")
     source.repos = [renamed]
     for row in source.rows:
         row["repository"]["nameWithOwner"] = renamed["full_name"]
-    assert reconcile(source, beads, "user:@me")["status"] == "complete"
+    result = reconcile(source, beads, "user:@me", state)
+    assert result["status"] == "complete" and result["modes"] == {"example/renamed": "full"}
     assert len(beads.items()) == 2
     assert all("example/renamed#" in row["external_ref"] for row in beads.items())
     asyncio.run(check_http())
@@ -106,6 +115,8 @@ def main() -> None:
                 "status": "passed",
                 "checks": [
                     "repeat sync",
+                    "zero-write unchanged pass",
+                    "durable incremental checkpoints",
                     "issue/PR readiness",
                     "dependency removal",
                     "claims and local triage",

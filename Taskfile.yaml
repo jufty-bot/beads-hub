@@ -58,4 +58,8 @@ tasks:
   sync-now:
     desc: Run one reconciliation in Compose using the shared sync lock
     cmds:
-      - docker compose exec -T github-reconciler python3 /usr/local/bin/gh_global_sync.py
+      - docker compose exec -T github-reconciler python3 /usr/local/bin/gh_global_sync.py {{.CLI_ARGS}}
+  sync-status:
+    desc: Show per-repository sync checkpoints, successes, failures, and rate cooldown
+    cmds:
+      - docker compose exec -T github-reconciler python3 /usr/local/bin/gh_global_sync.py --status

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from threading import Lock
 from typing import Any
+from urllib.parse import unquote, urlencode
 
 from githubkit import GitHub as Client
 from githubkit import Response
-from githubkit.exception import GitHubException
+from githubkit.exception import GitHubException, RateLimitExceeded, RequestFailed
 
 Json = dict[str, Any]
 """JSON objects at the GitHub snapshot boundary."""
@@ -19,6 +24,7 @@ HEADERS = {"X-GitHub-Api-Version": "2022-11-28"}
 
 NODE_QUERY = """
 query($id: ID!, $cursor: String) {
+  rateLimit { remaining resetAt }
   node(id: $id) {
     __typename
     ... on Issue {
@@ -55,6 +61,17 @@ query($id: ID!, $cursor: String) {
 }
 """
 """Read PR evidence and authoritative closure by stable node identity."""
+
+
+class RateLimited(RuntimeError):
+    """Stop source reads until a GitHub-provided deadline, shared by all read workers."""
+
+    def __init__(self, retry_at: float) -> None:
+        """Expose a safe deadline without including response bodies or credentials."""
+        self.retry_at = retry_at
+        super().__init__(
+            f"GitHub rate limited until {datetime.fromtimestamp(retry_at, UTC).isoformat()}"
+        )
 
 
 def observed_at() -> str:
@@ -134,8 +151,12 @@ def node_metadata(node: Json) -> Json:
 class GitHub:
     """Use a synchronous SDK client so CLI and MCP share the same reconciliation lifecycle."""
 
-    def __init__(self, client: Client[Any] | None = None) -> None:
+    def __init__(
+        self, client: Client[Any] | None = None, *, workers: int = 1, retry_at: float = 0
+    ) -> None:
         """Accept a test client or authenticate directly from the injected GH_TOKEN."""
+        if not 1 <= workers <= 4:
+            raise ValueError("GH_SYNC_WORKERS must be between 1 and 4")
         if client is None:
             token = os.environ.get("GH_TOKEN")
             if not token:
@@ -144,6 +165,54 @@ class GitHub:
                 token, user_agent="beads-hub", timeout=30, http_cache=False, auto_retry=False
             )
         self.client = client
+        self.workers = workers
+        self.retry_at = retry_at
+        self.rate_lock = Lock()
+
+    def check_rate(self) -> None:
+        """Prevent new requests while a prior request has exhausted the shared API budget."""
+        with self.rate_lock:
+            if self.retry_at > time.time():
+                raise RateLimited(self.retry_at)
+
+    def defer(self, retry_at: float) -> None:
+        """Let in-flight workers extend, but never shorten, the shared cooldown."""
+        with self.rate_lock:
+            self.retry_at = max(self.retry_at, retry_at)
+
+    def observe_headers(self, headers: Any) -> None:
+        """Record a primary-budget reset even when the last allowed REST request succeeds."""
+        if headers.get("x-ratelimit-remaining") == "0":
+            self.defer(float(headers.get("x-ratelimit-reset", time.time() + 60)))
+
+    def failure(self, error: GitHubException, operation: str) -> RuntimeError:
+        """Preserve rate-limit deadlines and keep arbitrary API error bodies out of logs."""
+        deadline = time.time() + 60
+        limited = isinstance(error, RateLimitExceeded)
+        if limited:
+            assert isinstance(error, RateLimitExceeded)
+            deadline = time.time() + max(60, error.retry_after.total_seconds())
+        if isinstance(error, RequestFailed):
+            headers = error.response.headers
+            limited |= error.response.status_code == 429
+            limited |= "retry-after" in headers or headers.get("x-ratelimit-remaining") == "0"
+            retry = headers.get("retry-after")
+            if retry:
+                try:
+                    deadline = time.time() + float(retry)
+                except ValueError:
+                    deadline = parsedate_to_datetime(retry).timestamp()
+            if headers.get("x-ratelimit-remaining") == "0":
+                deadline = max(deadline, float(headers.get("x-ratelimit-reset", deadline)))
+            if limited and error.response.status_code == 200:
+                rate = (error.response.json().get("data") or {}).get("rateLimit") or {}
+                if rate.get("resetAt"):
+                    deadline = max(deadline, datetime.fromisoformat(rate["resetAt"]).timestamp())
+        if limited:
+            self.defer(deadline)
+            return RateLimited(self.retry_at)
+        status = f" HTTP {error.response.status_code}" if isinstance(error, RequestFailed) else ""
+        return RuntimeError(f"GitHub {type(error).__name__}{status} {operation}")
 
     def pages(self, endpoint: str) -> list[Json]:
         """Let GitHubKit follow REST Link headers, validating each page before use."""
@@ -153,10 +222,14 @@ class GitHub:
             rows = response.json()
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                 raise ValueError(f"Invalid GitHub collection: {endpoint}")
+            self.observe_headers(response.headers)
+            if response.raw_response.links.get("next"):
+                self.check_rate()
             return rows
 
         separator = "&" if "?" in endpoint else "?"
         try:
+            self.check_rate()
             return list(
                 self.client.rest.paginate(
                     self.client.request,
@@ -167,7 +240,7 @@ class GitHub:
                 )
             )
         except GitHubException as error:
-            raise RuntimeError(f"GitHub {type(error).__name__} while listing {endpoint}") from error
+            raise self.failure(error, f"listing {endpoint}") from error
 
     def repositories(self, scopes: str) -> list[Json]:
         """Resolve credential-visible user/org/repo inventories without search truncation."""
@@ -187,11 +260,12 @@ class GitHub:
                     raise ValueError("repo: requires OWNER/REPO")
                 owner, repo_name = name.split("/")
                 try:
-                    repos = [
-                        dict(self.client.rest.repos.get(owner, repo_name, headers=HEADERS).json())
-                    ]
+                    self.check_rate()
+                    response = self.client.rest.repos.get(owner, repo_name, headers=HEADERS)
+                    self.observe_headers(response.headers)
+                    repos = [dict(response.json())]
                 except GitHubException as error:
-                    raise RuntimeError(f"GitHub {type(error).__name__} reading {name}") from error
+                    raise self.failure(error, f"reading {name}") from error
             elif name == "@me" and kind == "user":
                 repos = self.pages("user/repos?affiliation=owner")
             else:
@@ -211,13 +285,15 @@ class GitHub:
         seen: set[str] = set()
         while True:
             try:
+                self.check_rate()
                 payload = self.client.graphql(
                     NODE_QUERY, variables={"id": node_id, "cursor": cursor}
                 )
             except GitHubException as error:
-                raise RuntimeError(
-                    f"GitHub {type(error).__name__} reading node {node_id}"
-                ) from error
+                raise self.failure(error, f"reading node {node_id}") from error
+            rate = payload.get("rateLimit") or {}
+            if rate.get("remaining") == 0:
+                self.defer(datetime.fromisoformat(rate["resetAt"]).timestamp())
             node = payload.get("node")
             if not node or node.get("id") != node_id:
                 raise ValueError(f"GitHub node {node_id} is unavailable; retaining its local state")
@@ -236,14 +312,37 @@ class GitHub:
                 raise ValueError(f"GitHub repeated a closing-reference cursor for {node_id}")
             seen.add(cursor)
 
-    def open_items(self, repo: Json) -> list[Json]:
-        """Stage source text, source-owned metadata, and PR signals before any Beads writes."""
-        rows = self.pages(f"repos/{repo['full_name']}/issues?state=open&sort=created&direction=asc")
+    def nodes(self, node_ids: list[str]) -> dict[str, Json]:
+        """Bound independent node reads; only workers use threads, never Beads or MCP context."""
+        node_ids = list(dict.fromkeys(node_ids))
+        if self.workers == 1 or len(node_ids) < 2:
+            return {node_id: self.node(node_id) for node_id in node_ids}
+
+        def partition(ids: list[str]) -> list[Json]:
+            """Reuse a thread-local SDK session and close it before joining the worker."""
+            with self.client:
+                return [self.node(node_id) for node_id in ids]
+
+        workers = min(self.workers, len(node_ids))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="github-read") as pool:
+            parts = [node_ids[index::workers] for index in range(workers)]
+            return {node["id"]: node for group in pool.map(partition, parts) for node in group}
+
+    def items(
+        self, repo: Json, *, since: str | None = None, prs: list[Json] | None = None
+    ) -> list[Json]:
+        """Stage an open inventory or all-state delta and refresh known PRs independently."""
+        query = urlencode({"state": "all", "since": since}) if since else "state=open"
+        rows = self.pages(f"repos/{repo['full_name']}/issues?{query}&sort=updated&direction=asc")
+        previous = {bead["metadata"]["hub"]["node_id"]: bead for bead in prs or []}
+        details = self.nodes(
+            [row["node_id"] for row in rows if "pull_request" in row] + list(previous)
+        )
         items: list[Json] = []
         for row in rows:
             kind = "pr" if "pull_request" in row else "issue"
             item = (
-                self.node(row["node_id"])
+                details[row["node_id"]]
                 if kind == "pr"
                 else {
                     "id": row["node_id"],
@@ -259,4 +358,20 @@ class GitHub:
             item["labels"] = [label["name"] for label in row["labels"]]
             item["github"] = {**source_metadata(row, repo), **item.get("github", {})}
             items.append(item)
+            previous.pop(item["id"], None)
+        for node_id, bead in previous.items():
+            node = details[node_id]
+            node.update(
+                kind="pr",
+                labels=[
+                    unquote(label.removeprefix("github:"))
+                    for label in bead.get("labels") or []
+                    if label.startswith("github:")
+                ],
+            )
+            node["github"] = {
+                **bead["metadata"]["hub"].get("github", {}),
+                **node["github"],
+            }
+            items.append(node)
         return items
