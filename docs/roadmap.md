@@ -9,9 +9,9 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | Source and local triage separation | Implemented | Classification is supplied by humans/agents |
 | PR signal triage and closing dependencies | Implemented | Latest signals, indexed closing targets, GitHub's recognized references |
 | Shared CLI, UI, official MCP | Implemented | Trusted clients; one database |
-| Unified image and Kubernetes manifests | Implemented | One Pod/PVC; operator supplies registry image, Secret, storage, and access controls |
-| Runtime and regression validation | 34 offline tests and ARM64 real-runtime smoke pass, including UI data, MCP HTTP, remote SQL, and persistence | Cluster/Gateway deployment, credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
-| Live multi-repository pilot | Pending | Needs an authorized credential and reachable deployment target |
+| Unified image and Docker Compose deployment | Implemented | Four services, one persistent volume, localhost ports; operator supplies runtime credentials |
+| Runtime and regression validation | 34 offline tests, Compose validation, and ARM64 Compose smoke pass, including UI data, MCP HTTP, remote SQL, and down/up persistence | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
+| Live multi-repository pilot | Pending | Needs an authorized GitHub credential and Docker host |
 | Backup/restore exercise | Pending | Requires storage/backup selection and a disposable restore target |
 
 Before adopting this as a daily backlog, run a credentialed pilot across issue-only, PR-only, private, and organization repositories. Confirm visibility, merge policy signals, graph cleanup, and operational freshness. Record request volume and pass duration before deciding whether incremental watermarks, batching, or explicit per-repository cadence are needed.

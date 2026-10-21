@@ -1,0 +1,96 @@
+name: beads-hub
+
+x-runtime: &runtime
+  image: ${IMAGE:-beads-hub:test}
+  restart: unless-stopped
+  stop_grace_period: 30s
+  volumes:
+    - data:/var/lib/beads
+
+services:
+  dolt:
+    <<: *runtime
+    build: .
+    command: [/usr/local/bin/entrypoint-dolt.sh]
+    ports:
+      - '127.0.0.1:${BEADS_UI_PORT:-3000}:3000'
+      - '127.0.0.1:${BEADS_MCP_PORT:-8080}:8080'
+      - '127.0.0.1:${BEADS_SQL_PORT:-3307}:3307'
+    healthcheck:
+      test:
+        - CMD
+        - env
+        - DOLT_CLI_PASSWORD=
+        - dolt
+        - --host
+        - 127.0.0.1
+        - --port
+        - '3307'
+        - --user
+        - root
+        - --no-tls
+        - sql
+        - -q
+        - SELECT 1
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+
+  hub:
+    <<: *runtime
+    network_mode: service:dolt
+    command: [/usr/local/bin/entrypoint-hub.sh]
+    depends_on:
+      dolt:
+        condition: service_healthy
+    environment:
+      BEADS_REMOTE_PASSWORD: ${BEADS_REMOTE_PASSWORD:?Inject the remote SQL password at runtime}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:3000/healthz]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+
+  beads-mcp:
+    <<: *runtime
+    network_mode: service:dolt
+    command: [/usr/local/bin/entrypoint-mcp.py]
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      GH_TOKEN: ${GH_TOKEN:-}
+      GH_SYNC_QUERY: ${GH_SYNC_QUERY:-user:@me}
+      MCP_TRANSPORT: ${MCP_TRANSPORT:-streamable-http}
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=2).close()"
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+
+  github-reconciler:
+    <<: *runtime
+    network_mode: service:dolt
+    command: [python3, /usr/local/bin/gh_global_sync.py, --loop, --interval, '120']
+    depends_on:
+      hub:
+        condition: service_healthy
+    environment:
+      GH_TOKEN: ${GH_TOKEN:-}
+      GH_SYNC_QUERY: ${GH_SYNC_QUERY:-user:@me}
+    healthcheck:
+      test: [CMD, bd, info, --json]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  data:

@@ -2,7 +2,9 @@ version: '3'
 
 vars:
   IMAGE: beads-hub:test
-  NAMESPACE: beads-hub
+
+env:
+  IMAGE: '{{.IMAGE}}'
 
 tasks:
   install:
@@ -30,7 +32,6 @@ tasks:
     cmds: ['uv run --locked pytest {{.CLI_ARGS}}']
   smoke:
     desc: Build and exercise a disposable Dolt, UI, MCP, and synthetic GitHub stack
-    deps: [build]
     cmds: ['bash scripts/smoke.sh {{.IMAGE}}']
   run:
     desc: Run a command in the project environment
@@ -41,20 +42,20 @@ tasks:
   push:
     desc: Push the explicitly selected image
     cmds: ['docker push {{.IMAGE}}']
-  manifests:
-    desc: Render the base Kubernetes manifests
-    cmds: [kubectl kustomize k8s/]
   validate:
-    desc: Validate manifests against the selected cluster without applying them
-    cmds: [kubectl apply --dry-run=client -k k8s/]
+    desc: Validate Compose configuration without printing injected credentials
+    cmds: [docker compose config --quiet]
   deploy:
-    desc: Deploy the base workload (configure its image, scope, and Secret first)
-    cmds: [kubectl apply -k k8s/]
+    desc: Build and start the Compose stack, waiting for healthy services
+    deps: [build]
+    cmds: [docker compose up -d --wait --wait-timeout 180]
+  down:
+    desc: Stop the Compose stack and retain its data volume
+    cmds: [docker compose down]
+  logs:
+    desc: Follow Compose service logs
+    cmds: ['docker compose logs --follow {{.CLI_ARGS}}']
   sync-now:
-    desc: Run one reconciliation using the shared sync lock
+    desc: Run one reconciliation in Compose using the shared sync lock
     cmds:
-      - kubectl exec -n {{.NAMESPACE}} statefulset/beads-hub -c github-reconciler -- python3 /usr/local/bin/gh_global_sync.py
-  port-forward:
-    desc: Forward UI, MCP, and Dolt to localhost
-    cmds:
-      - kubectl port-forward -n {{.NAMESPACE}} svc/beads-hub 3000:3000 8080:8080 3307:3307
+      - docker compose exec -T github-reconciler python3 /usr/local/bin/gh_global_sync.py

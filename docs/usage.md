@@ -2,16 +2,16 @@
 
 ## Development
 
-Python 3.11+, uv, Task, and Docker are required for the full validation workflow. `task install` runs `uv sync --locked`. `task fix`, `task lint`, `task check`, and `task test` cover formatting, lint, shell syntax, types, and token-free behavior tests. `task run -- <command>` runs inside the locked environment.
+Python 3.11+, uv, Task, and Docker with the Compose plugin are required for the full validation workflow. `task install` runs `uv sync --locked`. `task fix`, `task lint`, `task check`, and `task test` cover formatting, lint, shell syntax, types, and token-free behavior tests. `task run -- <command>` runs inside the locked environment.
 
-`task smoke` builds `beads-hub:test`, creates disposable containers and a named volume, and removes them on exit. It uses synthetic GitHub data with real Beads, Dolt, UI, and MCP processes. It verifies readiness, dependencies, claims, local fields, closure, reopening, renames, HTTP access, a separate remote SQL pointer, and restart persistence. It requires no GitHub token and does not publish ports or images. Do not run `tests/smoke_runtime.py` against a real hub: it intentionally writes its synthetic backlog.
+`task smoke` builds `beads-hub:test`, starts the checked-in Compose stack under a disposable project name with its own volume, and removes them on exit. It uses synthetic GitHub data with real Beads, Dolt, UI, and MCP processes. It verifies readiness, dependencies, claims, local fields, closure, reopening, renames, HTTP access, a separate remote SQL pointer, and restart persistence. It requires no GitHub token and publishes temporary localhost ports instead of the normal fixed ports. Its cleanup removes only the test project and volume. Do not run `tests/smoke_runtime.py` against a real hub: it intentionally writes its synthetic backlog.
 
 ## Select repositories
 
-Set the ConfigMap's `GH_SYNC_QUERY` to semicolon-separated scopes:
+Set `GH_SYNC_QUERY` in the environment used by Compose to semicolon-separated scopes:
 
-```yaml
-GH_SYNC_QUERY: 'user:@me;org:example-team;repo:another-owner/project'
+```sh
+export GH_SYNC_QUERY='user:@me;org:example-team;repo:another-owner/project'
 ```
 
 Supported scopes:
@@ -25,51 +25,55 @@ Supported scopes:
 
 Archived and disabled repositories are excluded. Overlapping scopes deduplicate by repository node ID. Search qualifiers such as `is:open`, `label:`, or free text are rejected. These are inventory scopes, not arbitrary GitHub search queries. Both issues and PRs are always included. Visibility is limited to the credential; inaccessible or filtered-out items are never considered closed merely because they disappear.
 
-The hub polls full open-item inventories, then reads PR signals and all GitHub closing references. A new pass starts 120 seconds after the preceding pass ends. This is polling, not a fixed freshness SLA. Large portfolios may need a longer interval; edit the reconciler arguments in the StatefulSet. Manual and MCP triggers share the same lock.
+The hub polls full open-item inventories, then reads PR signals and all GitHub closing references. A new pass starts 120 seconds after the preceding pass ends. This is polling, not a fixed freshness SLA. Large portfolios may need a longer interval; edit the reconciler command in `compose.yaml`. Manual and MCP triggers share the same lock.
 
-## Deploy
+## Deploy with Docker Compose
 
-The base requires a Kubernetes cluster, a default StorageClass that supports a 10Gi ReadWriteOnce PVC, and an externally managed GitHub credential. One Pod runs four containers: Dolt, UI/initialization, official MCP, and the reconciler. Keep replicas at one. The storage driver must support advisory filesystem locks shared between the containers.
+Docker Engine and the Docker Compose plugin run the four services in `compose.yaml`: Dolt, UI/initialization, official MCP, and the reconciler. The named `data` volume stores the database and workspace. Keep one instance of each service.
 
-1. Choose a registry image tag and build/push it:
+Inject these variables through your shell or password manager before starting:
 
-   ```sh
-   task build IMAGE=ghcr.io/example/beads-hub:0.1.0
-   task push IMAGE=ghcr.io/example/beads-hub:0.1.0
-   ```
+| Variable | Use |
+| --- | --- |
+| `BEADS_REMOTE_PASSWORD` | Required, nonempty password for the database-scoped remote SQL user `beads`; passed only to hub initialization |
+| `GH_TOKEN` | Read credential for selected repositories; passed only to MCP and the reconciler. Optional for offline UI/MCP use; sync reports an authentication failure when absent |
+| `GH_SYNC_QUERY` | Inventory scopes, defaults to `user:@me` |
 
-2. Set **all four** StatefulSet image references to that image (or use a Kustomize overlay's `images` replacement for `beads-hub`). `IMAGE` selects the build/push task image; it does not rewrite manifests. Configure `GH_SYNC_QUERY` in the ConfigMap. Private registries may also require `imagePullSecrets`. The checked-in `beads-hub:test` tag is for an image loaded into a local cluster.
+The GitHub credential needs metadata, issues, pull-request, checks, and commit-status read access to the selected repositories, including any private-repository and organization authorization. Keep credentials out of source files, printed Compose configuration, and command history. `task validate` checks configuration with `docker compose config --quiet`, without printing environment values. Keep the same runtime environment available for operational tasks; Compose requires the SQL password when loading its configuration.
 
-3. Create the namespace, then provision two Secrets in namespace `beads-hub` using your secret manager. `beads-github-auth` needs key `GH_TOKEN`; the token needs metadata, issues, pull-request, checks, and commit-status read access for the selected repositories. Scope private-repository and organization authorization appropriately. Only MCP and the reconciler receive that Secret. `beads-dolt-auth` needs a nonempty `password` key for the database-scoped remote SQL user `beads`; only hub initialization receives that Secret. Do not commit credentials or put them in command history.
+```sh
+task validate
+task deploy
+```
 
-   ```sh
-   kubectl apply -f k8s/namespace.yaml
-   ```
+`task deploy` builds the image locally, then runs `docker compose up -d --wait --wait-timeout 180`. The direct equivalent is `docker compose up -d --build --wait --wait-timeout 180`. Startup waits for SQL, then initializes the workspace and remote account before starting MCP and sync. All services have health checks and `restart: unless-stopped`. An unhealthy running container is reported unhealthy; the restart policy applies when its process exits.
 
-4. Render and validate before applying:
+The default image is `beads-hub:test`. To choose another tag consistently across build and startup, use `task deploy IMAGE=ghcr.io/example/beads-hub:0.1.0`. A registry is optional for a local deployment; `task push IMAGE=...` publishes an image only when explicitly invoked.
 
-   ```sh
-   task manifests
-   task validate
-   task deploy
-   kubectl rollout status -n beads-hub statefulset/beads-hub
-   task port-forward
-   ```
+| Endpoint | Default host address |
+| --- | --- |
+| Web UI | `http://127.0.0.1:3000` |
+| Streamable HTTP MCP | `http://127.0.0.1:8080/mcp` |
+| Dolt SQL | `127.0.0.1:3307` |
 
-   `task validate` uses `kubectl apply --dry-run=client -k k8s/`; kubectl still needs a reachable API server for schema discovery. `task deploy` applies the base only. No deployment, image push, or credential provisioning is performed by the test workflow.
+Compose binds all three published ports to localhost. `BEADS_UI_PORT`, `BEADS_MCP_PORT`, and `BEADS_SQL_PORT` can select different host ports while container ports remain fixed. UI, MCP, and sync share Dolt's network namespace, so their port mappings belong to the `dolt` service. A separate container on the Compose network can reach SQL as `dolt:3307`. Initialize a matching `bd` CLI with the [pointer bootstrap](../AGENTS.md).
 
-Open the UI at `http://127.0.0.1:3000`, connect MCP to `http://127.0.0.1:8080/mcp`, and connect a matching `bd` CLI through `127.0.0.1:3307` using the [pointer bootstrap](../AGENTS.md). ClusterIP is reachable by other cluster workloads: configure your cluster's network policy and private access controls to match its trust boundary. Dolt's root account remains local to the Pod; remote clients use the password-protected `beads` account restricted to the hub database. Rotate that password by updating its Secret and restarting the hub container. SQL traffic is not TLS-enabled by this baseline; use port forwarding or a trusted private tunnel.
+Dolt's root account stays local to the shared container network namespace; external clients use the password-protected `beads` account restricted to `beads_hub`. To rotate its password, update the injected `BEADS_REMOTE_PASSWORD` and run `task deploy` so Compose recreates initialization with the new environment. Use a private tunnel or your own authenticated proxy for access from another host. SQL has no TLS configured, and UI/MCP have no built-in authentication. For legacy SSE, set `MCP_TRANSPORT=sse` and connect to `http://127.0.0.1:8080/sse`.
 
-The optional `k8s/httproute.yaml` routes `/mcp` to port 8080 and `/` to port 3000 without rewriting paths. Configure its hostname, Gateway reference, and access controls, install Gateway API CRDs/controller, and apply it explicitly. It is excluded from the default Kustomization. SQL remains a TCP service, not an HTTPRoute. For legacy SSE, set `MCP_TRANSPORT=sse` and connect directly to `/sse`; the sample HTTPRoute covers Streamable HTTP only.
+```sh
+task down       # Stops services and removes containers/network; retains the data volume
+task deploy     # Reuses the existing database
+```
 
-`NAMESPACE` on operational tasks selects the target for exec/port-forward. To change the deployed namespace, edit the Kustomization, Namespace resource, and optional route together; changing the task variable alone does not rewrite them.
+The default Compose project name is `beads-hub`, with data in `beads-hub_data`. `COMPOSE_PROJECT_NAME` or `docker compose -p` selects a different stack and volume. Bring the complete stack up together when replacing the Dolt container because the other services reference its network namespace. `task down` deliberately omits `--volumes`; deleting that volume would erase the backlog.
 
 ## Operate and triage
 
 ```sh
 task sync-now
-kubectl logs -n beads-hub statefulset/beads-hub -c github-reconciler --tail=20
-kubectl logs -n beads-hub statefulset/beads-hub -c beads-mcp --tail=20
+docker compose logs --tail=20 github-reconciler
+docker compose logs --tail=20 beads-mcp
+docker compose ps
 ```
 
 One-shot sync emits JSON and exits nonzero on `partial`; a periodic worker logs the same error result and retries after its interval. A `busy` result means the running pass holds the shared lock. Discovery failures stop the pass before writes. Repository failures allow other repositories to progress and preserve the failed repository's previous snapshots when its source reads fail. Database write failures may leave a partially applied repository; subsequent passes repair it. There is no transactional snapshot of GitHub or of the entire portfolio.
@@ -88,7 +92,7 @@ GitHub labels appear as `github:<percent-encoded-name>` to avoid collisions with
 
 Only authoritative `closingIssuesReferences` create blockers. GitHub resolves supported closing keywords, including recognized cross-repository references; arbitrary mentions and text in non-closing contexts do not create dependencies. Linked issues must already be indexed by the selected scopes. Removing a reference removes only edges managed by the hub. Existing manual edges are retained. Closing a PR releases its blocking effect through Beads' normal readiness rules.
 
-For backups, preserve the PVC and use [Dolt backups](https://docs.dolthub.com/sql-reference/version-control/backups) appropriate to your storage. A consistent stopped-volume snapshot is also possible. Restore the workspace metadata and database together; test restoration before relying on a backup. Do not delete or reinitialize a PVC to work around startup errors. Initialization errors fail the container without a fallback destructive init.
+For backups, preserve the Compose data volume and use [Dolt backups](https://docs.dolthub.com/sql-reference/version-control/backups) appropriate to your storage. A consistent stopped-volume snapshot is also possible. Restore the workspace metadata and database together; test restoration before relying on a backup. Do not delete or reinitialize the data volume to work around startup errors. Initialization errors fail the container without a fallback destructive init.
 
 ## Current limits
 

@@ -8,7 +8,7 @@ Never read secret files or embed credentials in code, tests, output, or manifest
 
 Prefer `bd` when a shell is available. Use the same CLI version as the hub (`1.3.1`). The [upstream MCP guide](https://github.com/gastownhall/beads/blob/v1.3.1/integrations/beads-mcp/README.md) recommends CLI workflows for shell agents; schema and token costs depend on the host's tool discovery behavior.
 
-For a local connection, start `task port-forward`. Create a dedicated pointer workspace once, with the hub's explicit database name:
+Start the Compose stack with `task deploy`; its SQL port is published on localhost. Create a dedicated pointer workspace once, with the hub's explicit database name:
 
 ```sh
 export BEADS_WORKING_DIR="$HOME/.config/beads-remote"
@@ -30,7 +30,7 @@ mkdir -p "$BEADS_WORKING_DIR"
 )
 ```
 
-For an in-cluster client, use `beads-hub.beads-hub.svc.cluster.local` as the server host. The `beads` account has privileges only on `beads_hub`; its password is the one injected into the hub through `beads-dolt-auth`. For an external client, use a port forward or a private TCP tunnel. HTTP ingress does not carry Dolt SQL. Initialize a fresh pointer only; do not reinitialize an existing unrelated workspace.
+The `beads` account has privileges only on `beads_hub`; its password is the value injected as `BEADS_REMOTE_PASSWORD` when starting Compose. A separate container on the Compose network can use `dolt:3307` as its SQL endpoint. For a client on another host, use a private TCP tunnel to the published localhost port. Initialize a fresh pointer only; do not reinitialize an existing unrelated workspace.
 
 From a repository checkout:
 
@@ -49,7 +49,7 @@ Dependencies drive readiness; a blocked issue may still have stored `status=open
 
 ## MCP agents
 
-With `task port-forward` running, connect to the official server over Streamable HTTP:
+With the Compose stack running, connect to the official server over Streamable HTTP:
 
 ```json
 {
@@ -67,4 +67,4 @@ The hub adds `trigger_github_sync`, a synchronous, locked reconciliation call. I
 
 For stdio, install the pinned official package with `uv tool install beads-mcp==1.3.1` and launch `beads-mcp` with the pointer environment above. Pass `BEADS_WORKING_DIR`, `BEADS_DIR`, the Dolt connection variables, and `BEADS_ACTOR` through your MCP client's environment configuration. Do not set `BEADS_DB` to a directory: that variable belongs to SQLite, whereas this hub uses Dolt metadata.
 
-The HTTP server and SQL endpoint are trusted control interfaces. Apply your network and identity controls before exposing them beyond port forwarding. `context` may change workspace routing; do not use this deployment as a tenant isolation boundary.
+The HTTP server and SQL endpoint are trusted control interfaces published on localhost. Apply your network and identity controls before exposing them beyond the Docker host. `context` may change workspace routing; do not use this deployment as a tenant isolation boundary.

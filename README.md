@@ -12,7 +12,7 @@ flowchart LR
     UI[Beads UI :3000] --> CLI
     Agents[Shell agents] --> Dolt[Dolt :3307]
     CLI --> Dolt
-    Dolt --> PVC[Persistent volume]
+    Dolt --> Volume[Compose data volume]
 ```
 
 Issues and PRs are peer tasks with `type:issue` / `type:pr` labels. Actionable PRs enter the open queue. GitHub closing references create dependencies so an open PR blocks its issue until the PR closes. Local labels such as `category:bug-fix` remain yours to manage.
@@ -25,7 +25,7 @@ task test
 task smoke  # Builds the image; tests a disposable stack without GitHub credentials
 ```
 
-For deployment, configure the image, GitHub scopes, and Kubernetes Secret described in [Usage](docs/usage.md), then run `task deploy` and `task port-forward`. The base deployment exposes only ClusterIP services; the optional Gateway route requires your private access controls.
+Inject `GH_TOKEN` and `BEADS_REMOTE_PASSWORD` into your shell environment, set `GH_SYNC_QUERY` for your repositories, then run `task deploy` (or `docker compose up -d --build --wait`). Docker Compose starts Dolt, UI, official MCP, and sync with a shared persistent volume. UI (`3000`), MCP (`8080`), and SQL (`3307`) are available on localhost. See [Usage](docs/usage.md) for setup and operating commands.
 
 - [Usage and deployment](docs/usage.md)
 - [Agent connections](AGENTS.md)
