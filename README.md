@@ -2,7 +2,7 @@
 
 A shared [Beads](https://github.com/gastownhall/beads) backlog for GitHub issues and pull requests across repositories. Categorize, prioritize, and claim either kind of work using the `bd` CLI, the official beads-mcp server, or [Beads UI](https://github.com/mantoni/beads-ui).
 
-GitHub supplies source text, labels, PR signals, and closure. Beads holds local categories, priorities, assignees, notes, and workflow decisions. Reconciliation reads GitHub; local edits never write back to GitHub.
+GitHubKit reads source text, labels, PR signals, and closure directly from GitHub. Each bead carries author, milestone, dates, and PR branch/review metadata. Beads holds local categories, priorities, assignees, notes, and workflow decisions. Local edits never write back to GitHub.
 
 ```mermaid
 flowchart LR
@@ -16,6 +16,8 @@ flowchart LR
 ```
 
 Issues and PRs are peer tasks with `type:issue` / `type:pr` labels. Actionable PRs enter the open queue. GitHub closing references create dependencies so an open PR blocks its issue until the PR closes. Local labels such as `category:bug-fix` remain yours to manage.
+
+The reconciler polls incrementally with durable checkpoints, independently refreshes open PR signals, and repairs coverage with an hourly full scan. Unchanged beads avoid repeat writes. It pauses two minutes between passes by default (`GH_SYNC_INTERVAL` changes this); `GH_SYNC_WORKERS=2` optionally overlaps GitHub reads while writes stay serial. Use `task sync-status` to inspect progress. See [Usage](docs/usage.md#select-repositories) for freshness and coverage limits.
 
 ```sh
 task install

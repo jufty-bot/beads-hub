@@ -25,7 +25,18 @@ Supported scopes:
 
 Archived and disabled repositories are excluded. Overlapping scopes deduplicate by repository node ID. Search qualifiers such as `is:open`, `label:`, or free text are rejected. These are inventory scopes, not arbitrary GitHub search queries. Both issues and PRs are always included. Visibility is limited to the credential; inaccessible or filtered-out items are never considered closed merely because they disappear.
 
-The hub polls full open-item inventories, then reads PR signals and all GitHub closing references. A new pass starts 120 seconds after the preceding pass ends. This is polling, not a fixed freshness SLA. Large portfolios may need a longer interval; edit the reconciler command in `compose.yaml`. Manual and MCP triggers share the same lock.
+The hub starts with a full open-item inventory, then polls changed issues/PRs in all states using a durable per-repository checkpoint and five-minute overlap. Every pass independently refreshes known open PR signals and all closing references. An hourly full open-backlog reconciliation repairs missed changes. It starts immediately after startup readiness; a new pass starts 120 seconds after the preceding pass ends. Set `GH_SYNC_INTERVAL` to another positive number of seconds before `task deploy` to change the pause. This is polling, not a fixed freshness SLA: source/API availability and pass duration affect lag. Manual and MCP triggers share the same lock.
+
+| GitHub change | Next successful poll |
+| --- | --- |
+| New or reopened open issue/PR | Import or refresh the same stable bead |
+| Edited title, labels, assignments, milestone | Refresh source-owned text and metadata |
+| New commits, CI results, or review decisions on an open PR | Refresh PR evidence, signal labels, and automatic readiness |
+| Imported issue closed or PR closed/merged | Verify state directly, then close the bead and save closure evidence |
+| Closed/referenced PR no longer blocks an issue | Closed blockers cease blocking through Beads; removed references prune hub-owned edges |
+| Temporary API failure or downtime | Retain the previous snapshot; retry on later polls or after restart |
+
+After bootstrap, all-state deltas can discover an item created and closed entirely between polls. Old closed history predating bootstrap is not imported, and this is not a complete event history. Local Beads closes do not prevent upstream closure verification. A missing or inaccessible source is never proof of closure.
 
 ## Deploy with Docker Compose
 
@@ -38,8 +49,10 @@ Inject these variables through your shell or password manager before starting:
 | `BEADS_REMOTE_PASSWORD` | Required, nonempty password for the database-scoped remote SQL user `beads`; passed only to hub initialization |
 | `GH_TOKEN` | Read credential for selected repositories; passed only to MCP and the reconciler. Optional for offline UI/MCP use; sync reports an authentication failure when absent |
 | `GH_SYNC_QUERY` | Inventory scopes, defaults to `user:@me` |
+| `GH_SYNC_INTERVAL` | Positive pause in seconds between automatic passes, defaults to `120` |
+| `GH_SYNC_WORKERS` | Independent GitHub node-read threads: `1` by default, optionally `2`–`4`; writes stay serial |
 
-The GitHub credential needs metadata, issues, pull-request, checks, and commit-status read access to the selected repositories, including any private-repository and organization authorization. Keep credentials out of source files, printed Compose configuration, and command history. `task validate` checks configuration with `docker compose config --quiet`, without printing environment values. Keep the same runtime environment available for operational tasks; Compose requires the SQL password when loading its configuration.
+The GitHub credential needs metadata, issues, pull-request, checks, and commit-status read access to the selected repositories, including any private-repository and organization authorization. The Python source adapter authenticates directly through GitHubKit; GitHub CLI installation and `gh auth login` are not used by sync. Keep credentials out of source files, printed Compose configuration, and command history. `task validate` checks configuration with `docker compose config --quiet`, without printing environment values. Keep the same runtime environment available for operational tasks; Compose requires the SQL password when loading its configuration.
 
 ```sh
 task validate
@@ -71,12 +84,20 @@ The default Compose project name is `beads-hub`, with data in `beads-hub_data`. 
 
 ```sh
 task sync-now
+task sync-now -- --full  # Force an open-backlog repair without deleting progress
+task sync-status        # Repository checkpoints, last success/error, and rate cooldown
 docker compose logs --tail=20 github-reconciler
 docker compose logs --tail=20 beads-mcp
 docker compose ps
 ```
 
-One-shot sync emits JSON and exits nonzero on `partial`; a periodic worker logs the same error result and retries after its interval. A `busy` result means the running pass holds the shared lock. Discovery failures stop the pass before writes. Repository failures allow other repositories to progress and preserve the failed repository's previous snapshots when its source reads fail. Database write failures may leave a partially applied repository; subsequent passes repair it. There is no transactional snapshot of GitHub or of the entire portfolio.
+One-shot sync emits JSON and exits nonzero on `partial`; a periodic worker logs the same result and retries after its interval. `modes` reports full/delta per repository; `writes` counts successful mutating Beads commands. Item counts describe processed records, not total backlog size. A `busy` result means another pass holds the lock. Discovery failures stop the pass before writes. Repository read failures preserve that repository's prior snapshots; write/graph failures may leave partial changes but do not advance its checkpoint. Successful repository results are saved together once at the end of a pass, while failed ones keep their prior checkpoints. A crash before saving safely replays that pass. There is no transactional snapshot of GitHub or the entire portfolio.
+
+Progress lives in `/var/lib/beads/.github-sync-state.json` on the shared volume. `task sync-status` reads it without contacting GitHub. Each repository has its last committed pass start (`checkpoint`), successful completion (`last_success_at`), full scan (`last_full_at`), and last error. Times are UTC Unix seconds. Check their age and reconciler logs; inventory errors appear in pass logs, and repositories outside the current scopes retain historical progress. The global `retry_at` records API cooldowns. Removing only this progress file requests a new open-inventory bootstrap, but normally use `--full` for repairs; malformed state fails visibly and needs operator attention. Never delete the data volume to reset polling.
+
+A healthy container/database alone does not prove GitHub freshness: the health check verifies database access. An unchanged bead's `metadata.hub.github.observed_at` intentionally stays unchanged to avoid repeat writes; use repository `last_success_at` for polling freshness. No automatic freshness alert or webhook receiver is implemented.
+
+Keep the default one read worker initially. For high-latency portfolios, `export GH_SYNC_WORKERS=2` before `task deploy` enables bounded parallel node reads; 4 is the maximum. GitHub recommends serial API requests to avoid secondary limits, so measure pass duration and API errors before increasing it. Only GitHub reads use threads. Beads writes, graph changes, and checkpoint commits remain ordered, including when sync is triggered through MCP.
 
 Use local labels for classification and standard Beads priority for ranking:
 
@@ -90,12 +111,16 @@ bd blocked --json
 
 GitHub labels appear as `github:<percent-encoded-name>` to avoid collisions with local categories and comma-based CLI filters. For example, `bug` becomes `github:bug` and `help wanted` becomes `github:help%20wanted`. The reconciler owns source title/description; put durable reasoning in Beads notes and comments. Beads priority and issue type are local choices (imports start as `task`, priority 2).
 
+Every bead also carries source facts under `metadata.hub.github`: author, upstream assignees, milestone, dates, comment count, repository details, and PR branch SHAs, size, reviewer requests, merge/review/CI state. Inspect these with `bd show <id> --json`; a short summary also appears in the description. GitHub assignees do not claim the bead. Repository grouping remains the `repo:OWNER/REPO` label, with stable repository identity in `metadata.hub.repo_id`.
+
+These are selected source observations, with the stored snapshot's `observed_at` timestamp. Reviewer details are bounded to 100 with explicit total/coverage fields; comment bodies, diffs, and history are not imported. See [source metadata](architecture.md#source-metadata) for fields and freshness limits. API throttling/exhaustion persists a cooldown from Retry-After/reset evidence; passes skip network requests until it expires, including after restarts. The SDK does not sleep through resets. Other network failures retry on subsequent polls.
+
 Only authoritative `closingIssuesReferences` create blockers. GitHub resolves supported closing keywords, including recognized cross-repository references; arbitrary mentions and text in non-closing contexts do not create dependencies. Linked issues must already be indexed by the selected scopes. Removing a reference removes only edges managed by the hub. Existing manual edges are retained. Closing a PR releases its blocking effect through Beads' normal readiness rules.
 
 For backups, preserve the Compose data volume and use [Dolt backups](https://docs.dolthub.com/sql-reference/version-control/backups) appropriate to your storage. A consistent stopped-volume snapshot is also possible. Restore the workspace metadata and database together; test restoration before relying on a backup. Do not delete or reinitialize the data volume to work around startup errors. Initialization errors fail the container without a fallback destructive init.
 
 ## Current limits
 
-This branch stores current source snapshots in Beads, not complete GitHub conversations, diffs, or source event history. Categorization and triage are human/agent actions through Beads; there is no model invocation or automatic taxonomy. Closed history is discovered only for items imported while open. No GitHub write-back, webhooks, incremental watermarks, rate-budget scheduler, HA, built-in authentication, or migration from gh-maintainer is implemented. API changes and moving paginated collections converge on later polls; a pass is not a point-in-time source snapshot. A failed or unavailable source never proves deletion.
+This branch stores selected source snapshots in Beads, not complete GitHub conversations, diffs, or source event history. Categorization and triage are human/agent actions; there is no model invocation or automatic taxonomy. Bootstrap imports open work; subsequent deltas include changed closed records. No GitHub write-back, webhooks, adaptive scheduling, GraphQL batching, automatic freshness alerts, HA, built-in authentication, or migration from gh-maintainer is implemented. Repository inventories and Beads lookups still run every pass. PRs absent from the REST delta retain last-known REST facts while GraphQL signals refresh. API changes, long clock skew, and moving paginated collections may require the periodic full repair; a pass is not a point-in-time snapshot. A failed or unavailable source never proves deletion.
 
 The pinned UI watches local workspace files rather than polling SQL for every external mutation. Refresh the browser after remote CLI changes if they have not appeared. Its live-refresh behavior across remote clients is an upstream limitation; the smoke test verifies actual issue/PR delivery over its WebSocket API, not a full browser interaction suite.

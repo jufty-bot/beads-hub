@@ -14,7 +14,6 @@ import fcntl
 import io
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -22,30 +21,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from github_source import GitHub, RateLimited
+from sync_state import SyncState
+
 Json = dict[str, Any]
-"""JSON objects exchanged with gh and bd."""
+"""JSON objects exchanged with GitHub and bd."""
 
 MANAGED_PREFIXES = ("repo:", "type:", "github:", "ci:", "conflict:", "review:", "draft:")
 """Label namespaces owned exclusively by reconciliation."""
-
-NODE_QUERY = """
-query($id: ID!, $cursor: String) {
-  node(id: $id) {
-    __typename
-    ... on Issue { id number title body state url repository { id nameWithOwner } }
-    ... on PullRequest {
-      id number title body state url repository { id nameWithOwner }
-      isDraft mergeable reviewDecision headRefName
-      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-      closingIssuesReferences(first: 100, after: $cursor) {
-        nodes { id number repository { id nameWithOwner } }
-        pageInfo { hasNextPage endCursor }
-      }
-    }
-  }
-}
-"""
-"""Node identity survives repository renames and transfers."""
 
 
 def command(args: list[str]) -> Any:
@@ -57,103 +40,6 @@ def command(args: list[str]) -> Any:
     if result.returncode:
         raise RuntimeError(f"{args[0]} {args[1]} failed: {result.stderr.strip()[:500]}")
     return json.loads(result.stdout) if result.stdout.strip() else None
-
-
-class GitHub:
-    """Read GitHub through gh using its securely injected runtime credentials."""
-
-    def pages(self, endpoint: str) -> list[Json]:
-        """Read an entire REST collection, without using GitHub search."""
-        rows: list[Json] = []
-        separator = "&" if "?" in endpoint else "?"
-        for page in range(1, 100_001):
-            batch = command(["gh", "api", f"{endpoint}{separator}per_page=100&page={page}"])
-            if not isinstance(batch, list) or any(not isinstance(row, dict) for row in batch):
-                raise ValueError(f"Invalid GitHub collection: {endpoint}")
-            rows.extend(batch)
-            if len(batch) < 100:
-                return rows
-        raise ValueError(f"Pagination did not terminate: {endpoint}")
-
-    def repositories(self, scopes: str) -> list[Json]:
-        """Resolve explicit user/org/repo scopes; reject unsupported search predicates."""
-        selected: dict[str, Json] = {}
-        parts = [part.strip() for part in scopes.split(";") if part.strip()]
-        if not parts:
-            raise ValueError("GH_SYNC_QUERY must contain at least one user:, org:, or repo: scope")
-        for part in parts:
-            if not re.fullmatch(r"(?:user|org|repo):[A-Za-z0-9_.@/-]+", part):
-                raise ValueError(
-                    f"Unsupported scope {part!r}; use user:NAME, org:NAME, repo:OWNER/REPO"
-                )
-            kind, name = part.split(":", 1)
-            if kind == "repo":
-                if name.count("/") != 1:
-                    raise ValueError("repo: requires OWNER/REPO")
-                repos = [command(["gh", "api", f"repos/{name}"])]
-            elif name == "@me" and kind == "user":
-                repos = self.pages("user/repos?affiliation=owner")
-            else:
-                if "/" in name or "@" in name:
-                    raise ValueError("user:/org: requires a literal account name (or user:@me)")
-                endpoint = f"orgs/{name}/repos?type=all" if kind == "org" else f"users/{name}/repos"
-                repos = self.pages(endpoint)
-            for repo in repos:
-                if not repo.get("archived") and not repo.get("disabled"):
-                    selected[repo["node_id"]] = repo
-        return sorted(selected.values(), key=lambda repo: repo["full_name"].lower())
-
-    def node(self, node_id: str) -> Json:
-        """Read explicit source state and exhaust a PR's closing-issue references."""
-        cursor: str | None = None
-        links: list[Json] = []
-        seen: set[str] = set()
-        while True:
-            args = ["gh", "api", "graphql", "-f", f"query={NODE_QUERY}", "-f", f"id={node_id}"]
-            if cursor:
-                args.extend(["-f", f"cursor={cursor}"])
-            payload = command(args)
-            if payload.get("errors"):
-                raise ValueError(f"GraphQL returned errors for node {node_id}")
-            node = (payload.get("data") or {}).get("node")
-            if not node or node.get("id") != node_id:
-                raise ValueError(f"GitHub node {node_id} is unavailable; retaining its local state")
-            if node["__typename"] == "Issue":
-                return dict(node)
-            connection = node["closingIssuesReferences"]
-            links.extend(connection["nodes"])
-            info = connection["pageInfo"]
-            if not info["hasNextPage"]:
-                node["closingIssuesReferences"]["nodes"] = links
-                return dict(node)
-            cursor = info["endCursor"]
-            if not cursor or cursor in seen:
-                raise ValueError(f"GitHub repeated a closing-reference cursor for {node_id}")
-            seen.add(cursor)
-
-    def open_items(self, repo: Json) -> list[Json]:
-        """Stage a full repository before writing, including all source labels and PR signals."""
-        rows = self.pages(f"repos/{repo['full_name']}/issues?state=open&sort=created&direction=asc")
-        items: list[Json] = []
-        for row in rows:
-            kind = "pr" if "pull_request" in row else "issue"
-            if kind == "pr":
-                item = self.node(row["node_id"])
-            else:
-                item = {
-                    "id": row["node_id"],
-                    "number": row["number"],
-                    "title": row["title"],
-                    "body": row.get("body") or "",
-                    "state": row["state"].upper(),
-                    "url": row["html_url"],
-                    "repository": {"id": repo["node_id"], "nameWithOwner": repo["full_name"]},
-                }
-            item["kind"] = kind
-            item["labels"] = [label["name"] for label in row["labels"]]
-            validate_item(item)
-            items.append(item)
-        return items
 
 
 def validate_item(item: Json) -> None:
@@ -228,12 +114,61 @@ def csv_value(value: str) -> str:
     return out.getvalue()
 
 
+def describe(item: Json) -> str:
+    """Put a compact source summary before the body; local reasoning belongs in notes."""
+    lines = [f"Upstream {item['kind']}: {item['url']}"]
+    source = item.get("github") or {}
+    if source:
+        author = source.get("author") or {}
+        lines.append(
+            f"Author: {author.get('login') or 'unknown'} | "
+            f"Created: {source.get('created_at') or 'unknown'} | "
+            f"Updated: {source.get('updated_at') or 'unknown'}"
+        )
+        milestone = source.get("milestone") or {}
+        lines.append(
+            f"GitHub assignees: {', '.join(source.get('assignees') or []) or 'none'} | "
+            f"Milestone: {milestone.get('title') or 'none'} | "
+            f"Comments: {source.get('comment_count', 'unknown')}"
+        )
+        pr = source.get("pull_request")
+        if pr:
+            lines.extend(
+                [
+                    f"Branch: {pr.get('head_ref')} -> {pr.get('base_ref')} | "
+                    f"Changes: +{pr.get('additions')} / -{pr.get('deletions')} "
+                    f"in {pr.get('changed_files')} files",
+                    f"CI: {pr.get('ci_state') or 'unknown'} | "
+                    f"Review: {pr.get('review_decision') or 'none'} | "
+                    f"Merge: {pr.get('merge_state_status') or 'unknown'}",
+                ]
+            )
+    return "\n".join(lines) + f"\n\n{item.get('body') or ''}"
+
+
+def snapshot_metadata(source: Json, previous: Json) -> Json:
+    """Retain a stored observation time when the source facts have not changed."""
+    source = dict(source)
+    if {key: value for key, value in source.items() if key != "observed_at"} == {
+        key: value for key, value in previous.items() if key != "observed_at"
+    }:
+        if "observed_at" in previous:
+            source["observed_at"] = previous["observed_at"]
+    return source
+
+
 class Beads:
     """Keep local workflow fields intact while updating source-owned fields through bd."""
 
+    writes: int = 0
+    """Successful mutating CLI commands issued by this adapter instance."""
+
     def call(self, *args: str) -> Any:
         """Invoke the configured bd executable with machine-readable output."""
-        return command([os.environ.get("BEADS_PATH", "bd"), *args, "--json"])
+        result = command([os.environ.get("BEADS_PATH", "bd"), *args, "--json"])
+        if args[0] in {"create", "update"} or args[:2] in {("dep", "add"), ("dep", "remove")}:
+            self.writes += 1
+        return result
 
     def items(self) -> list[Json]:
         """Load every source-backed bead, explicitly disabling the CLI result limit."""
@@ -248,10 +183,13 @@ class Beads:
         self.call("update", bead["id"], "--metadata", json.dumps({"hub": hub}))
         bead.setdefault("metadata", {})["hub"] = hub
 
-    def close_source(self, bead: Json, state: str) -> None:
-        """Apply verified upstream closure while retaining the last source snapshot."""
+    def close_source(self, bead: Json, item: Json) -> None:
+        """Apply verified closure and refresh evidence, retaining the last REST snapshot."""
         hub = dict(bead["metadata"]["hub"])
-        hub.update(source_state=state, synced_status="closed")
+        hub.update(source_state=item["state"], synced_status="closed")
+        hub["github"] = snapshot_metadata(
+            {**hub.get("github", {}), **item.get("github", {})}, hub.get("github", {})
+        )
         self.call(
             "update",
             bead["id"],
@@ -267,11 +205,12 @@ class Beads:
     def upsert(self, item: Json, bead: Json | None) -> Json:
         """Refresh a source snapshot without clearing categories, claims, notes, or priority."""
         status, labels = evaluate(item)
+        previous_hub = dict(((bead or {}).get("metadata") or {}).get("hub") or {})
         title = (
             f"[{item['repository']['nameWithOwner']} {item['kind']} #{item['number']}] "
             f"{item['title']}"
         )
-        description = f"Upstream {item['kind']}: {item['url']}\n\n{item.get('body') or ''}"
+        description = describe(item)
         identity = {
             "node_id": item["id"],
             "repo_id": item["repository"]["id"],
@@ -279,6 +218,7 @@ class Beads:
             "kind": item["kind"],
             "number": item["number"],
             "source_state": item["state"],
+            "github": snapshot_metadata(item.get("github", {}), previous_hub.get("github", {})),
         }
         if bead is None:
             bead = self.call(
@@ -300,7 +240,8 @@ class Beads:
         manual = "hub:manual-status" in (bead.get("labels") or [])
         status_args: list[str] = []
         if status == "closed":
-            status_args = ["--status", "closed", "--force"]
+            if current != "closed":
+                status_args = ["--status", "closed", "--force"]
             hub["synced_status"] = "closed"
         elif (
             not manual
@@ -309,25 +250,21 @@ class Beads:
         ):
             if bead.get("assignee"):
                 status = "in_progress"
-            status_args = [
-                "--status",
-                status,
-                "--if-status",
-                current,
-                "--if-assignee",
-                bead.get("assignee") or "",
-            ]
+            if current != status:
+                status_args = [
+                    "--status",
+                    status,
+                    "--if-status",
+                    current,
+                    "--if-assignee",
+                    bead.get("assignee") or "",
+                ]
             hub["synced_status"] = status
-        args = [
-            "update",
-            bead["id"],
-            "--title",
-            title,
-            "--description",
-            description,
-            "--external-ref",
-            source_ref(item),
-        ]
+        args = ["update", bead["id"]]
+        fields = {"title": title, "description": description, "external_ref": source_ref(item)}
+        for name, value in fields.items():
+            if bead.get(name) != value:
+                args.extend([f"--{name.replace('_', '-')}", value])
         current_labels = set(bead.get("labels") or [])
         for label in sorted(labels - current_labels):
             args.extend(["--add-label", csv_value(label)])
@@ -335,43 +272,77 @@ class Beads:
             if label.startswith(MANAGED_PREFIXES):
                 args.extend(["--remove-label", csv_value(label)])
         hub.update(identity)
-        self.call(*args, *status_args, "--metadata", json.dumps({"hub": hub}))
+        if hub != ((bead.get("metadata") or {}).get("hub") or {}):
+            args.extend(["--metadata", json.dumps({"hub": hub})])
+        if len(args) > 2 or status_args:
+            self.call(*args, *status_args)
+        bead.update(fields)
+        bead["labels"] = sorted(
+            labels | {label for label in current_labels if not label.startswith(MANAGED_PREFIXES)}
+        )
         bead.setdefault("metadata", {})["hub"] = hub
         if status_args:
             bead["status"] = status
-        bead["external_ref"] = source_ref(item)
         return bead
 
-    def links(self, pr: Json, desired: set[str]) -> None:
-        """Reconcile only hub-owned blocking edges, retaining preexisting manual dependencies."""
+    def links(self, pr: Json, desired: set[str], *, cache: dict[str, set[str]]) -> None:
+        """Reconcile owned edges using a pass-local graph cache; retain manual dependencies."""
         hub = dict(pr["metadata"]["hub"])
         owned = set(hub.get("blocking_issues", []))
+        for issue_id in desired | owned:
+            if issue_id not in cache:
+                cache[issue_id] = {
+                    dep["id"]
+                    for dep in self.call("dep", "list", issue_id, "--type", "blocks") or []
+                }
+        present = {issue_id for issue_id in desired | owned if pr["id"] in cache[issue_id]}
         for issue_id in sorted(owned - desired):
-            self.call("dep", "remove", issue_id, pr["id"])
+            if issue_id in present:
+                self.call("dep", "remove", issue_id, pr["id"])
+                cache[issue_id].remove(pr["id"])
             owned.remove(issue_id)
             hub["blocking_issues"] = sorted(owned)
             self.metadata(pr, hub)
         for issue_id in sorted(desired - owned):
-            dependencies = self.call("dep", "list", issue_id, "--type", "blocks") or []
-            if any(dep["id"] == pr["id"] for dep in dependencies):
+            if issue_id in present:
                 continue
             # Persist intent first so an interrupted add can be repaired on the next run.
             owned.add(issue_id)
             hub["blocking_issues"] = sorted(owned)
             self.metadata(pr, hub)
-        for issue_id in sorted(desired & owned):
+        for issue_id in sorted((desired & owned) - present):
             self.call("dep", "add", issue_id, pr["id"])
+            cache[issue_id].add(pr["id"])
 
 
-def reconcile(github: GitHub, beads: Beads, scopes: str) -> Json:
-    """Apply complete repository snapshots; report errors and never infer closure from absence."""
-    summary: Json = {"status": "complete", "issues": 0, "prs": 0, "closed": 0, "errors": []}
+def reconcile(
+    github: GitHub,
+    beads: Beads,
+    scopes: str,
+    state: SyncState | None = None,
+    *,
+    force_full: bool = False,
+) -> Json:
+    """Apply staged deltas and PR evidence, committing progress only after graph updates."""
+    state = state or SyncState()
+    summary: Json = {
+        "status": "complete",
+        "issues": 0,
+        "prs": 0,
+        "closed": 0,
+        "errors": [],
+        "modes": {},
+    }
+    before_writes = beads.writes
     repos = github.repositories(scopes)
     existing = beads.items()
     by_node: dict[str, Json] = {}
     by_ref: dict[str, Json] = {}
+    by_repo: dict[str, list[Json]] = {}
     for bead in existing:
         hub = (bead.get("metadata") or {}).get("hub") or {}
+        if hub.get("repo_id"):
+            by_repo.setdefault(hub["repo_id"], []).append(bead)
         node_id = hub.get("node_id")
         if node_id:
             if node_id in by_node:
@@ -381,42 +352,76 @@ def reconcile(github: GitHub, beads: Beads, scopes: str) -> Json:
             raise ValueError(f"Duplicate Beads external reference: {bead['external_ref']}")
         by_ref[bead["external_ref"]] = bead
     active_prs: list[tuple[Json, Json]] = []
+    pending: dict[str, tuple[Json, float, bool]] = {}
+    failed: set[str] = set()
     for repo in repos:
+        started = time.time()
+        since = None if force_full else state.since(repo, now=started)
+        summary["modes"][repo["full_name"]] = "delta" if since else "full"
         try:
-            items = github.open_items(repo)
+            local = by_repo.get(repo["node_id"], [])
+            prs = [
+                bead
+                for bead in local
+                if bead["metadata"]["hub"].get("kind") == "pr"
+                and bead["metadata"]["hub"].get("source_state") == "OPEN"
+            ]
+            items = github.items(repo, since=since, prs=prs)
+            for item in items:
+                validate_item(item)
             closing: list[tuple[Json, Json]] = []
-            seen = {item["id"] for item in items}
-            for bead in existing:
-                hub = (bead.get("metadata") or {}).get("hub") or {}
-                if (
-                    hub.get("repo_id") == repo["node_id"]
-                    and hub.get("node_id") not in seen
-                    and bead["status"] != "closed"
-                ):
-                    item = github.node(hub["node_id"])
-                    item["kind"] = hub["kind"]
-                    item["labels"] = []
+            if since is None:
+                seen = {item["id"] for item in items}
+                missing = {
+                    bead["metadata"]["hub"]["node_id"]: bead
+                    for bead in local
+                    if bead["metadata"]["hub"].get("node_id") not in seen
+                    and (
+                        bead["status"] != "closed"
+                        or bead["metadata"]["hub"].get("source_state") not in {"CLOSED", "MERGED"}
+                    )
+                }
+                for node_id, item in github.nodes(list(missing)).items():
+                    bead = missing[node_id]
+                    item.update(kind=bead["metadata"]["hub"]["kind"], labels=[])
                     validate_item(item)
                     if item["state"] in {"CLOSED", "MERGED"}:
                         closing.append((item, bead))
-            # All GitHub reads for this repository succeeded before any writes.
+            # Complete source reads and validation precede this repository's writes.
             for item in items:
                 previous = by_node.get(item["id"]) or by_ref.get(source_ref(item))
-                was_closed = previous is not None and previous["status"] == "closed"
+                already_closed = (
+                    previous is not None
+                    and previous["status"] == "closed"
+                    and (
+                        (previous.get("metadata") or {}).get("hub", {}).get("source_state")
+                        in {"CLOSED", "MERGED"}
+                    )
+                )
                 bead = beads.upsert(item, previous)
                 by_node[item["id"]] = bead
                 by_ref[source_ref(item)] = bead
                 if item["state"] != "OPEN":
-                    summary["closed"] += int(not was_closed)
+                    summary["closed"] += int(not already_closed)
                 else:
                     summary["prs" if item["kind"] == "pr" else "issues"] += 1
                     if item["kind"] == "pr":
                         active_prs.append((item, bead))
             for item, bead in closing:
-                beads.close_source(bead, item["state"])
+                beads.close_source(bead, item)
                 summary["closed"] += 1
-        except (KeyError, ValueError, TypeError, RuntimeError, subprocess.TimeoutExpired) as error:
+            pending[repo["node_id"]] = (repo, started, since is None)
+        except RateLimited as error:
+            state.data["retry_at"] = error.retry_at
+            state.mark_failure(repo, str(error))
             summary["errors"].append(f"{repo['full_name']}: {error}")
+            summary["retry_at"] = error.retry_at
+            break
+        except (KeyError, ValueError, TypeError, RuntimeError, subprocess.TimeoutExpired) as error:
+            failed.add(repo["node_id"])
+            state.mark_failure(repo, str(error))
+            summary["errors"].append(f"{repo['full_name']}: {error}")
+    dependencies: dict[str, set[str]] = {}
     for item, bead in active_prs:
         try:
             targets = {
@@ -424,16 +429,25 @@ def reconcile(github: GitHub, beads: Beads, scopes: str) -> Json:
                 for link in item["closingIssuesReferences"]["nodes"]
                 if link["id"] in by_node and by_node[link["id"]]["status"] != "closed"
             }
-            beads.links(bead, targets)
+            beads.links(bead, targets, cache=dependencies)
         except (KeyError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+            repo_id = item["repository"]["id"]
+            failed.add(repo_id)
+            if repo_id in pending:
+                state.mark_failure(pending[repo_id][0], str(error))
             summary["errors"].append(f"{source_ref(item)} dependencies: {error}")
+    for repo_id, (repo, started, full) in pending.items():
+        if repo_id not in failed:
+            state.mark_success(repo, started=started, finished=time.time(), full=full)
+    state.save()
     if summary["errors"]:
         summary["status"] = "partial"
+    summary["writes"] = beads.writes - before_writes
     return summary
 
 
-def run_sync() -> Json:
-    """Serialize periodic, manual, and MCP syncs across containers sharing the workspace."""
+def run_sync(*, force_full: bool = False) -> Json:
+    """Serialize triggers and persist progress/rate cooldowns across container restarts."""
     workspace = Path(os.environ.get("BEADS_WORKING_DIR", "/var/lib/beads"))
     if not (workspace / ".beads/metadata.json").is_file():
         return {"status": "partial", "errors": ["Hub is not initialized"]}
@@ -443,21 +457,53 @@ def run_sync() -> Json:
         except BlockingIOError:
             return {"status": "busy", "errors": []}
         try:
-            return reconcile(GitHub(), Beads(), os.environ.get("GH_SYNC_QUERY", "user:@me"))
-        except (OSError, KeyError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+            state = SyncState(workspace / ".github-sync-state.json")
+            retry_at = float(state.data.get("retry_at", 0))
+            if retry_at > time.time():
+                raise RateLimited(retry_at)
+            github = GitHub(workers=int(os.environ.get("GH_SYNC_WORKERS", "1")))
+            try:
+                with github.client:
+                    return reconcile(
+                        github,
+                        Beads(),
+                        os.environ.get("GH_SYNC_QUERY", "user:@me"),
+                        state,
+                        force_full=force_full,
+                    )
+            finally:
+                state.data["retry_at"] = github.retry_at
+                state.save()
+        except RateLimited as error:
+            return {"status": "partial", "errors": [str(error)], "retry_at": error.retry_at}
+        except (
+            OSError,
+            KeyError,
+            ValueError,
+            TypeError,
+            RuntimeError,
+            subprocess.TimeoutExpired,
+        ) as error:
             return {"status": "partial", "errors": [str(error)]}
 
 
 def main() -> None:
     """Print one JSON summary per pass; periodic failures remain visible and retry later."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--loop", action="store_true", help="Reconcile periodically")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--loop", action="store_true", help="Reconcile periodically")
+    mode.add_argument("--status", action="store_true", help="Show durable polling progress")
+    parser.add_argument("--full", action="store_true", help="Force a full open-backlog repair")
     parser.add_argument("--interval", type=int, default=120, help="Seconds between sync passes")
     args = parser.parse_args()
     if args.interval < 1:
         parser.error("--interval must be positive")
+    if args.status:
+        workspace = Path(os.environ.get("BEADS_WORKING_DIR", "/var/lib/beads"))
+        print(json.dumps(SyncState(workspace / ".github-sync-state.json").data))
+        return
     while True:
-        summary = run_sync()
+        summary = run_sync(force_full=args.full)
         print(json.dumps(summary), flush=True)
         if not args.loop:
             sys.exit(1 if summary["status"] == "partial" else 0)

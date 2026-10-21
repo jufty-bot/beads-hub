@@ -12,11 +12,23 @@ Source contracts: [Beads initialization](https://github.com/gastownhall/beads/bl
 
 ## Enumerate repositories instead of global item search
 
-The original draft used GraphQL search. GitHub search has a result cap and is not a safe global open-item inventory. This version accepts user/org/repo inventory scopes and paginates repository issue listings, which include PRs, then fetches PR signals via GraphQL. This trades request count for transparent coverage without adaptive search partitioning. Full polling is intentionally the initial baseline; incremental scheduling can follow measured demand.
+The original draft used GraphQL search. GitHub search has a result cap and is not a safe global open-item inventory. This version accepts user/org/repo inventory scopes and paginates repository issue listings, which include PRs, then fetches PR signals via GraphQL. Full open inventories bootstrap and repair coverage; all-state incremental reads handle ordinary updates without adaptive search partitioning.
 
 ## Keep GitHub and local workflow ownership explicit
 
 Source labels are namespaced and escaped. The hub updates its own label namespaces and metadata key while leaving local classification and triage intact. It uses source node identity for rename continuity. Upstream closure requires an explicit state read; a scope change, permission failure, or missing record does not imply closure. Claims and status overrides survive source refresh. See the [architecture contract](architecture.md) for field ownership and readiness policy.
+
+## Use GitHubKit for Python source access
+
+[GitHubKit](https://yanyongyu.github.io/githubkit/) supplies synchronous REST/GraphQL requests, token authentication, session handling, and REST Link pagination. It replaces subprocess calls to `gh api`; the image no longer requires GitHub CLI. We retain `bd` as the supported Beads interface. The SDK stays within the tested 0.16 minor series and its exact release is locked. Raw JSON is validated at our source boundary, keeping reconciliation independent of generated SDK model classes.
+
+The client disables persistent HTTP caching and automatic SDK retries. Failed reads preserve the last good snapshot, and API cooldowns defer subsequent requests without blocking the process through a reset. Closing-reference cursors remain explicit so repeated cursors fail visibly. Selected source facts live in `metadata.hub.github`, never local assignee/priority/notes. Reviewer detail is bounded with explicit coverage rather than adding unbounded review/conversation ingestion.
+
+## Keep a small incremental poller
+
+The deployment uses polling with a few-minute freshness target. GitHubKit remains the source adapter; no additional connector platform or SQLite mirror is introduced. A single atomic JSON file holds repository cursors, successful coverage times, errors, and rate cooldowns. Cursors advance after both source projection and graph writes succeed so replay repairs partial database changes. Five-minute overlap and hourly full reconciliation address timestamp ties and missed/late updates. PR signals refresh independently of REST cursors; issue timestamps alone cannot establish current CI or mergeability. See [polling contracts](architecture.md#incremental-polling-and-progress).
+
+Unchanged source fields and existing dependency edges avoid repeat mutations. Repository indexes and pass-local dependency reads reduce repeated local work. Progress for successful repositories is staged and atomically saved once per pass; failed repositories retain their old cursors. This avoids repeatedly serializing and fsyncing the entire state file while preserving safe replay if the pass crashes. Observation freshness belongs in progress state rather than forcing a Beads write on every poll. GitHub reads stay serial by default, with an opt-in bound of four threads for independent node lookups. This keeps the synchronous CLI/MCP lifecycle and ordered writes intact without adding an async scheduler or passing MCP workspace context into worker threads. Concurrency and cadence should be tuned only after measuring a credentialed portfolio.
 
 ## Use authoritative closing relationships
 

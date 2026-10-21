@@ -21,9 +21,14 @@ class MemoryBeads(sync.Beads):
         """Start with an empty backlog and dependency graph."""
         self.rows: dict[str, sync.Json] = {}
         self.edges: set[tuple[str, str]] = set()
+        self.calls: list[tuple[str, ...]] = []
+        self.writes = 0
 
     def call(self, *args: str) -> Any:
         """Emulate the bd commands used by the adapter, rejecting unsupported calls."""
+        self.calls.append(args)
+        if args[0] in {"create", "update"} or args[:2] in {("dep", "add"), ("dep", "remove")}:
+            self.writes += 1
         if args[0] == "list":
             assert "--limit" in args and args[args.index("--limit") + 1] == "0"
             return copy.deepcopy(list(self.rows.values()))
@@ -158,6 +163,60 @@ def test_absence_requires_explicit_closure_and_reopen() -> None:
     assert len(beads.rows) == 1 and beads.rows["hub-1"]["status"] == "open"
 
 
+def test_locally_closed_bead_still_observes_upstream_closure() -> None:
+    """A local close cannot suppress later authoritative GitHub state or merge evidence."""
+    row = item("pr")
+    source, beads = FixtureGitHub([row]), MemoryBeads()
+    sync.reconcile(source, beads, "user:@me")
+    bead = beads.rows["hub-1"]
+    bead["status"] = "closed"
+    source.rows = []
+    merged = copy.deepcopy(row)
+    merged["state"] = "MERGED"
+    merged["github"]["pull_request"]["merged_at"] = "2026-10-21T12:00:00Z"
+    source.states[row["id"]] = merged
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    hub = bead["metadata"]["hub"]
+    assert hub["source_state"] == "MERGED" and hub["synced_status"] == "closed"
+    assert hub["github"]["pull_request"]["merged_at"] == "2026-10-21T12:00:00Z"
+    source.rows = [row]
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert bead["status"] == "in_progress"
+
+
+def test_polling_converges_across_item_lifecycle() -> None:
+    """Repeated polls import new work and converge after updates, merges, and reopening."""
+    source, beads = FixtureGitHub([]), MemoryBeads()
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    issue, pr = item(), item("pr", number=2)
+    pr["reviewDecision"] = None
+    pr["closingIssuesReferences"]["nodes"] = [{"id": issue["id"]}]
+    source.rows = [issue, pr]
+    source.states = {row["id"]: copy.deepcopy(row) for row in source.rows}
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    issue_bead, pr_bead = beads.rows["hub-1"], beads.rows["hub-2"]
+    assert len(beads.rows) == 2 and beads.edges == {("hub-1", "hub-2")}
+    assert pr_bead["status"] == "open"
+    pr["reviewDecision"] = "APPROVED"
+    issue["title"] = "Updated upstream"
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert pr_bead["status"] == "in_progress"
+    assert issue_bead["title"].endswith("Updated upstream")
+    source.rows = []
+    source.states[issue["id"]]["state"] = "CLOSED"
+    source.states[pr["id"]]["state"] = "MERGED"
+    source.failed_repos.add("R_1")
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "partial"
+    assert issue_bead["status"] == "open" and pr_bead["status"] == "in_progress"
+    source.failed_repos.clear()
+    assert sync.reconcile(source, beads, "user:@me")["closed"] == 2
+    assert issue_bead["status"] == pr_bead["status"] == "closed"
+    source.rows = [issue]
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert issue_bead["status"] == "open" and pr_bead["status"] == "closed"
+    assert len(beads.rows) == 2
+
+
 def test_scope_change_preserves_other_repo() -> None:
     """A narrower sync never closes work from an excluded repository."""
     source, beads = FixtureGitHub([item()]), MemoryBeads()
@@ -276,84 +335,60 @@ def test_status_update_guards_against_new_claim(monkeypatch: pytest.MonkeyPatch)
     assert beads.rows["hub-1"]["status"] == "in_progress"
 
 
-def test_rest_pagination_beyond_search_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """More than 1,000 items are read without a search API cutoff."""
-    calls: list[list[str]] = []
-
-    def response(args: list[str]) -> list[sync.Json]:
-        """Return eleven full pages followed by an empty terminal page."""
-        calls.append(args)
-        return [{"number": 1}] * 100 if len(calls) <= 11 else []
-
-    monkeypatch.setattr(sync, "command", response)
-    assert len(sync.GitHub().pages("repos/example/orbit/issues?state=open")) == 1100
-    assert "page=12" in calls[-1][-1]
-
-
-def test_inventory_scopes_deduplicate_and_exclude_archives(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Overlapping user, organization, and explicit scopes import each active repo once."""
-    source = sync.GitHub()
-    active = repository()
-    archived = dict(repository("example/archive", "R_2"), archived=True)
-    monkeypatch.setattr(source, "pages", lambda endpoint: [active, archived])
-    monkeypatch.setattr(sync, "command", lambda args: active)
-    assert source.repositories("user:@me;org:example;repo:example/orbit") == [active]
-
-
-def test_invalid_later_source_row_prevents_repository_writes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Validate the whole REST snapshot before persisting even its earlier valid rows."""
-    source, beads = sync.GitHub(), MemoryBeads()
-    valid = {
-        "node_id": "synthetic",
-        "number": 1,
-        "title": "Synthetic",
-        "body": "",
-        "state": "open",
-        "html_url": "https://github.com/example/orbit/issues/1",
-        "labels": [],
-    }
-    invalid = dict(valid, node_id="invalid", state="unexpected")
-    monkeypatch.setattr(source, "repositories", lambda scopes: [repository()])
-    monkeypatch.setattr(source, "pages", lambda endpoint: [valid, invalid])
+def test_invalid_later_source_row_prevents_repository_writes() -> None:
+    """Validate the entire source snapshot before writing even its earlier valid rows."""
+    invalid = dict(item(number=2), state="unexpected")
+    source, beads = FixtureGitHub([item(), invalid]), MemoryBeads()
     assert sync.reconcile(source, beads, "user:@me")["status"] == "partial"
     assert not beads.rows
 
 
-@pytest.mark.parametrize("scope", ["", "user:@me is:open", "org:foo/bar", "repo:foo"])
-def test_invalid_scopes_rejected(scope: str) -> None:
-    """Unsupported search syntax fails before touching a backlog."""
-    with pytest.raises(ValueError):
-        sync.GitHub().repositories(scope)
+def test_metadata_refresh_preserves_local_fields() -> None:
+    """GitHub assignments and milestone changes cannot replace local ownership or notes."""
+    row = item("pr")
+    source, beads = FixtureGitHub([row]), MemoryBeads()
+    sync.reconcile(source, beads, "user:@me")
+    bead = beads.rows["hub-1"]
+    snapshot = bead["metadata"]["hub"]["github"]
+    assert snapshot["author"]["login"] == "synthetic-author"
+    assert snapshot["assignees"] == ["synthetic-assignee"]
+    assert snapshot["pull_request"]["head_sha"] == "a" * 40
+    assert "fix/synthetic -> main" in bead["description"]
+    assert "Synthetic milestone" in bead["description"]
+    assert bead["description"].endswith(row["body"])
+    bead.update(assignee="local-maintainer", notes="Keep this", priority=1)
+    bead["metadata"]["local"] = {"keep": True}
+    row["github"].update(assignees=[], milestone=None, comment_count=5)
+    row["github"]["pull_request"].update(requested_reviewers=[], requested_reviewers_total=0)
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    snapshot = bead["metadata"]["hub"]["github"]
+    assert snapshot["assignees"] == [] and snapshot["milestone"] is None
+    assert snapshot["comment_count"] == 5
+    assert snapshot["pull_request"]["requested_reviewers"] == []
+    assert bead["assignee"] == "local-maintainer" and bead["notes"] == "Keep this"
+    assert bead["priority"] == 1 and bead["metadata"]["local"] == {"keep": True}
 
 
-def test_graphql_partial_errors_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A GraphQL partial result cannot become a successful source snapshot."""
-    monkeypatch.setattr(sync, "command", lambda args: {"data": {}, "errors": [{"message": "x"}]})
-    with pytest.raises(ValueError, match="errors"):
-        sync.GitHub().node("synthetic")
-
-
-def test_reference_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PR references beyond the first page are retained."""
-    calls: list[list[str]] = []
-
-    def response(args: list[str]) -> sync.Json:
-        """Return two closing-reference pages for a single PR node."""
-        calls.append(args)
-        pr = item("pr")
-        pr["__typename"] = "PullRequest"
-        pr["closingIssuesReferences"] = {
-            "nodes": [{"id": f"issue-{len(calls)}"}],
-            "pageInfo": {"hasNextPage": len(calls) == 1, "endCursor": "next"},
-        }
-        return {"data": {"node": pr}}
-
-    monkeypatch.setattr(sync, "command", response)
-    result = sync.GitHub().node(item("pr")["id"])
-    assert len(result["closingIssuesReferences"]["nodes"]) == 2
-    assert "cursor=next" in calls[-1]
+def test_verified_closure_refreshes_evidence() -> None:
+    """A direct closure read updates timestamps while retaining last-known REST fields."""
+    row = item("pr")
+    source, beads = FixtureGitHub([row]), MemoryBeads()
+    sync.reconcile(source, beads, "user:@me")
+    source.rows = []
+    closed = copy.deepcopy(row)
+    closed.update(state="MERGED")
+    closed["github"] = {
+        "closed_at": "2026-10-21T12:00:00Z",
+        "updated_at": "2026-10-21T12:00:00Z",
+        "observed_at": "2026-10-21T12:01:00Z",
+        "pull_request": {**row["github"]["pull_request"], "merged_at": "2026-10-21T12:00:00Z"},
+    }
+    source.states[row["id"]] = closed
+    assert sync.reconcile(source, beads, "user:@me")["closed"] == 1
+    snapshot = beads.rows["hub-1"]["metadata"]["hub"]["github"]
+    assert snapshot["closed_at"] == snapshot["pull_request"]["merged_at"]
+    assert snapshot["author"] == row["github"]["author"]
+    assert snapshot["observed_at"] == "2026-10-21T12:01:00Z"
 
 
 def test_concurrent_sync_returns_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

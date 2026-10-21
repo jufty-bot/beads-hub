@@ -63,6 +63,7 @@ services:
     environment:
       GH_TOKEN: ${GH_TOKEN:-}
       GH_SYNC_QUERY: ${GH_SYNC_QUERY:-user:@me}
+      GH_SYNC_WORKERS: ${GH_SYNC_WORKERS:-1}
       MCP_TRANSPORT: ${MCP_TRANSPORT:-streamable-http}
     healthcheck:
       test:
@@ -78,13 +79,14 @@ services:
   github-reconciler:
     <<: *runtime
     network_mode: service:dolt
-    command: [python3, /usr/local/bin/gh_global_sync.py, --loop, --interval, '120']
+    command: [python3, /usr/local/bin/gh_global_sync.py, --loop, --interval, '${GH_SYNC_INTERVAL:-120}']
     depends_on:
       hub:
         condition: service_healthy
     environment:
       GH_TOKEN: ${GH_TOKEN:-}
       GH_SYNC_QUERY: ${GH_SYNC_QUERY:-user:@me}
+      GH_SYNC_WORKERS: ${GH_SYNC_WORKERS:-1}
     healthcheck:
       test: [CMD, bd, info, --json]
       interval: 30s
