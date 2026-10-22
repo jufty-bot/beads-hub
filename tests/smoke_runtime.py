@@ -41,8 +41,11 @@ def main() -> None:
     assert result["status"] == "complete" and result["writes"] == 0
     assert result["modes"] == {"example/orbit": "delta"}
     rows = {row["metadata"]["hub"]["kind"]: row for row in beads.items()}
-    assert len(rows) == 2
+    assert len(rows) == 3
     issue_id, pr_id = rows["issue"]["id"], rows["pr"]["id"]
+    epic_id = rows["repository"]["id"]
+    assert rows["repository"]["issue_type"] == "epic"
+    assert rows["issue"]["parent"] == rows["pr"]["parent"] == epic_id
     snapshot = rows["pr"]["metadata"]["hub"]["github"]
     assert snapshot["author"]["login"] == "synthetic-author"
     assert snapshot["assignees"] == ["synthetic-assignee"]
@@ -108,8 +111,9 @@ def main() -> None:
         row["repository"]["nameWithOwner"] = renamed["full_name"]
     result = reconcile(source, beads, "user:@me", state)
     assert result["status"] == "complete" and result["modes"] == {"example/renamed": "full"}
-    assert len(beads.items()) == 2
+    assert len(beads.items()) == 3
     assert all("example/renamed#" in row["external_ref"] for row in beads.items())
+    assert next(row for row in beads.items() if row["id"] == epic_id)["title"] == "example/renamed"
     asyncio.run(check_http())
     asyncio.run(check_stdio())
     print(
@@ -127,6 +131,7 @@ def main() -> None:
                     "upstream closure",
                     "upstream reopening",
                     "repository rename",
+                    "repository epic and child hierarchy",
                     "stdio MCP tools, resource, and sync trigger",
                 ],
             }
@@ -160,7 +165,7 @@ async def check_http() -> None:
             assert message.get("ok") is not False, message
             if message["type"] == "snapshot":
                 issues = message["payload"]["issues"]
-                assert len(issues) == 2
+                assert len(issues) == 3
                 assert {label for row in issues for label in row["labels"]} >= {
                     "type:issue",
                     "type:pr",

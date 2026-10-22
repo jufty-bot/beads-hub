@@ -13,6 +13,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -62,6 +63,17 @@ def validate_item(item: Json) -> None:
 def source_ref(item: Json) -> str:
     """Build the human-readable external reference, independent of Beads issue IDs."""
     return f"gh:{item['repository']['nameWithOwner']}#{item['kind']}:{item['number']}"
+
+
+def repository_scopes(repositories: list[str] | None) -> str:
+    """Use explicit repository names in place of the configured inventory scopes."""
+    if repositories is None:
+        return os.environ.get("GH_SYNC_QUERY", "user:@me")
+    if not repositories or any(
+        not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", name) for name in repositories
+    ):
+        raise ValueError("repositories must contain OWNER/REPO names")
+    return ";".join(f"repo:{name}" for name in repositories)
 
 
 def evaluate(item: Json) -> tuple[str, set[str]]:
@@ -181,6 +193,60 @@ class Beads:
         """Merge only the hub metadata key, preserving metadata owned by local tools."""
         self.call("update", bead["id"], "--metadata", json.dumps({"hub": hub}))
         bead.setdefault("metadata", {})["hub"] = hub
+
+    def repository(self, repo: Json, bead: Json | None) -> Json:
+        """Maintain a repository epic by stable node identity, retaining local workflow fields."""
+        name = repo["full_name"]
+        fields = {
+            "title": name,
+            "description": f"GitHub repository: https://github.com/{name}",
+            "external_ref": f"gh:{name}#repository",
+            "issue_type": "epic",
+        }
+        hub = dict(((bead or {}).get("metadata") or {}).get("hub") or {})
+        hub.update(node_id=repo["node_id"], repo_id=repo["node_id"], repo=name, kind="repository")
+        if bead is None:
+            bead = self.call(
+                "create",
+                "--title",
+                name,
+                "--type",
+                "epic",
+                "--external-ref",
+                fields["external_ref"],
+                "--description",
+                fields["description"],
+                "--metadata",
+                json.dumps({"hub": hub}),
+            )
+        args = ["update", bead["id"]]
+        for field, value in fields.items():
+            if bead.get(field) != value:
+                flag = "type" if field == "issue_type" else field.replace("_", "-")
+                args.extend([f"--{flag}", value])
+        labels = {f"repo:{name}", "type:repository"}
+        current_labels = set(bead.get("labels") or [])
+        for label in sorted(labels - current_labels):
+            args.extend(["--add-label", csv_value(label)])
+        for label in sorted(current_labels - labels):
+            if label.startswith(MANAGED_PREFIXES):
+                args.extend(["--remove-label", csv_value(label)])
+        if hub != ((bead.get("metadata") or {}).get("hub") or {}):
+            args.extend(["--metadata", json.dumps({"hub": hub})])
+        if len(args) > 2:
+            self.call(*args)
+        bead.update(fields)
+        bead["labels"] = sorted(
+            labels | {label for label in current_labels if not label.startswith(MANAGED_PREFIXES)}
+        )
+        bead.setdefault("metadata", {})["hub"] = hub
+        return bead
+
+    def parent(self, bead: Json, epic: Json) -> None:
+        """Attach both existing and newly imported work to its repository epic."""
+        if bead.get("parent") != epic["id"]:
+            self.call("update", bead["id"], "--parent", epic["id"])
+            bead["parent"] = epic["id"]
 
     def close_source(self, bead: Json, item: Json) -> None:
         """Apply verified closure and refresh evidence, retaining the last REST snapshot."""
@@ -340,7 +406,7 @@ def reconcile(
     by_repo: dict[str, list[Json]] = {}
     for bead in existing:
         hub = (bead.get("metadata") or {}).get("hub") or {}
-        if hub.get("repo_id"):
+        if hub.get("repo_id") and hub.get("kind") != "repository":
             by_repo.setdefault(hub["repo_id"], []).append(bead)
         node_id = hub.get("node_id")
         if node_id:
@@ -359,7 +425,12 @@ def reconcile(
         full = force_full or state.needs_full(repo, now=started)
         summary["modes"][repo["full_name"]] = "full" if full else "delta"
         try:
-            local = by_repo.get(repo["node_id"], [])
+            # An earlier repository may already have imported a transferred issue.
+            local = [
+                bead
+                for bead in by_repo.get(repo["node_id"], [])
+                if bead["metadata"]["hub"].get("repo_id") == repo["node_id"]
+            ]
             prs = [
                 bead
                 for bead in local
@@ -388,6 +459,15 @@ def reconcile(
                     if item["state"] in {"CLOSED", "MERGED"}:
                         closing.append((item, bead))
             # Complete source reads and validation precede this repository's writes.
+            epic = beads.repository(
+                repo,
+                by_node.get(repo["node_id"]) or by_ref.get(f"gh:{repo['full_name']}#repository"),
+            )
+            by_node[repo["node_id"]] = epic
+            by_ref[epic["external_ref"]] = epic
+            # Migrate existing children even when absent from an incremental delta.
+            for bead in local:
+                beads.parent(bead, epic)
             for item in items:
                 previous = by_node.get(item["id"]) or by_ref.get(source_ref(item))
                 already_closed = (
@@ -399,6 +479,7 @@ def reconcile(
                     )
                 )
                 bead = beads.upsert(item, previous)
+                beads.parent(bead, epic)
                 by_node[item["id"]] = bead
                 by_ref[source_ref(item)] = bead
                 if item["state"] != "OPEN":
@@ -446,7 +527,7 @@ def reconcile(
     return summary
 
 
-def run_sync(*, force_full: bool = False) -> Json:
+def run_sync(*, force_full: bool = False, repositories: list[str] | None = None) -> Json:
     """Serialize triggers and persist progress/rate cooldowns in the selected workspace."""
     workspace = Path(os.environ.get("BEADS_WORKING_DIR", "."))
     if not (workspace / ".beads/metadata.json").is_file():
@@ -457,6 +538,7 @@ def run_sync(*, force_full: bool = False) -> Json:
         except BlockingIOError:
             return {"status": "busy", "errors": []}
         try:
+            scopes = repository_scopes(repositories)
             state = SyncState(workspace / ".github-sync-state.json")
             retry_at = float(state.data.get("retry_at", 0))
             if retry_at > time.time():
@@ -467,7 +549,7 @@ def run_sync(*, force_full: bool = False) -> Json:
                     return reconcile(
                         github,
                         Beads(),
-                        os.environ.get("GH_SYNC_QUERY", "user:@me"),
+                        scopes,
                         state,
                         force_full=force_full,
                     )
@@ -494,8 +576,21 @@ def main() -> None:
     mode.add_argument("--loop", action="store_true", help="Reconcile periodically")
     mode.add_argument("--status", action="store_true", help="Show durable polling progress")
     parser.add_argument("--full", action="store_true", help="Force a full open-backlog repair")
+    parser.add_argument(
+        "--repo",
+        action="append",
+        dest="repositories",
+        metavar="OWNER/REPO",
+        help="Sync only this repository (repeatable); replaces GH_SYNC_QUERY for this run",
+    )
     parser.add_argument("--interval", type=int, default=120, help="Seconds between sync passes")
     args = parser.parse_args()
+    try:
+        repository_scopes(args.repositories)
+    except ValueError as error:
+        parser.error(str(error))
+    if args.status and args.repositories:
+        parser.error("--repo cannot be combined with --status")
     if args.interval < 1:
         parser.error("--interval must be positive")
     if args.status:
@@ -503,7 +598,7 @@ def main() -> None:
         print(json.dumps(SyncState(workspace / ".github-sync-state.json").data))
         return
     while True:
-        summary = run_sync(force_full=args.full)
+        summary = run_sync(force_full=args.full, repositories=args.repositories)
         print(json.dumps(summary), flush=True)
         if not args.loop:
             sys.exit(1 if summary["status"] == "partial" else 0)

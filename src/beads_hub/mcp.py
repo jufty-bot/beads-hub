@@ -15,9 +15,9 @@ from beads_hub.sync import run_sync
     name="trigger_github_sync",
     description="Reconcile GitHub issues and pull requests; returns complete, partial, or busy.",
 )
-def trigger_github_sync() -> dict[str, Any]:
-    """Run reconciliation synchronously under the same lock as the periodic worker."""
-    return run_sync()
+def trigger_github_sync(repositories: list[str] | None = None) -> dict[str, Any]:
+    """Sync selected OWNER/REPO names, or configured scopes when repositories is omitted."""
+    return run_sync(repositories=repositories)
 
 
 def main() -> None:

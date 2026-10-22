@@ -38,6 +38,30 @@ Supported scopes:
 
 Archived and disabled repositories are excluded. Overlapping scopes deduplicate by repository node ID. Search qualifiers such as `is:open`, `label:`, or free text are rejected. These are inventory scopes, not arbitrary GitHub search queries. Both issues and PRs are always included. Visibility is limited to the credential; inaccessible or filtered-out items are never considered closed merely because they disappear.
 
+To sync a specific set on demand, repeat `--repo OWNER/REPO`. These names replace `GH_SYNC_QUERY` for that command, including when combined with `--full` or `--loop`:
+
+```sh
+# Local workspace
+uv run --locked beads-hub-sync --repo example/api --repo example/web
+# Compose: repair only this repository
+task sync-now -- --repo example/api --full
+```
+
+The MCP tool accepts the same selection as `trigger_github_sync` arguments:
+
+```json
+{"repositories": ["example/api", "example/web"]}
+```
+
+Omit `repositories` to use configured scopes. Empty lists and malformed names are rejected. Unselected repositories keep their existing imports, epics, and checkpoints. A manual selection does not change the running periodic worker; set `GH_SYNC_QUERY='repo:example/api;repo:example/web'` in its environment to persist that selection.
+
+Each selected repository gets an epic titled `OWNER/REPO`, labeled `type:repository`, with its issues and PRs as children. Existing imports, including closed items, gain the parent during the next successful pass for their repository, even with an empty delta. Repository renames preserve the epic and child identities. Empty repositories also have epics. Epic status and local planning fields remain yours; closing children or removing a scope does not automatically close the epic. Sync maintains epic type and child parenting.
+
+```sh
+bd list --type epic --json
+bd list --parent <epic-id> --all --limit 0 --json
+```
+
 The hub starts with a full open-item inventory, then polls changed issues/PRs in all states using a durable per-repository checkpoint and five-minute overlap. Every pass independently refreshes known open PR signals and all closing references. An hourly full open-backlog reconciliation repairs missed changes. It starts immediately after startup readiness; a new pass starts 120 seconds after the preceding pass ends. Set `GH_SYNC_INTERVAL` to another positive number of seconds before `task deploy` to change the pause. This is polling, not a fixed freshness SLA: source/API availability and pass duration affect lag. Manual and MCP triggers share the same lock.
 
 | GitHub change | Next successful poll |
@@ -122,7 +146,7 @@ bd update <id> --claim
 bd blocked --json
 ```
 
-GitHub labels appear as `github:<percent-encoded-name>` to avoid collisions with local categories and comma-based CLI filters. For example, `bug` becomes `github:bug` and `help wanted` becomes `github:help%20wanted`. The reconciler owns source title/description; put durable reasoning in Beads notes and comments. Beads priority and issue type are local choices (imports start as `task`, priority 2).
+GitHub labels appear as `github:<percent-encoded-name>` to avoid collisions with local categories and comma-based CLI filters. For example, `bug` becomes `github:bug` and `help wanted` becomes `github:help%20wanted`. The reconciler owns source title/description; put durable reasoning in Beads notes and comments. Beads priority and issue/PR type are local choices (imports start as `task`, priority 2); repository containers stay `epic`.
 
 Every bead also carries source facts under `metadata.hub.github`: author, upstream assignees, milestone, dates, comment count, repository details, and PR branch SHAs, size, reviewer requests, merge/review/CI state. Inspect these with `bd show <id> --json`; a short summary also appears in the description. GitHub assignees do not claim the bead. Repository grouping remains the `repo:OWNER/REPO` label, with stable repository identity in `metadata.hub.repo_id`.
 

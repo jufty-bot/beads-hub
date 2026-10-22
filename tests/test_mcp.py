@@ -50,6 +50,32 @@ def test_official_server_and_trigger(tmp_path: Path, monkeypatch: pytest.MonkeyP
     asyncio.run(inspect_server())
 
 
+def test_selected_repository_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MCP exposes optional repository selection and forwards the client list unchanged."""
+    calls: list[dict[str, Any]] = []
+
+    def run(**kwargs: Any) -> dict[str, str]:
+        """Capture trigger arguments without a GitHub client or a database."""
+        calls.append(kwargs)
+        return {"status": "complete"}
+
+    monkeypatch.setattr(server, "run_sync", run)
+
+    async def trigger() -> None:
+        """Exercise selection through the real MCP schema and serialization."""
+        async with Client(mcp) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            assert "repositories" in tools["trigger_github_sync"].inputSchema["properties"]
+            result = await client.call_tool(
+                "trigger_github_sync", {"repositories": ["a/one", "b/two"]}
+            )
+            assert result.data["status"] == "complete"
+            await client.call_tool("trigger_github_sync", {})
+
+    asyncio.run(trigger())
+    assert calls == [{"repositories": ["a/one", "b/two"]}, {"repositories": None}]
+
+
 @pytest.mark.parametrize("transport", ["stdio", "streamable-http", "sse"])
 def test_transport_settings(monkeypatch: pytest.MonkeyPatch, transport: str) -> None:
     """Stdio receives no HTTP-only options; network transports retain their configured bind."""

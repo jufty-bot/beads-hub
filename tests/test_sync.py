@@ -6,6 +6,7 @@ import copy
 import csv
 import fcntl
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 from fixtures import FixtureGitHub, item, repository
 
 from beads_hub import sync
+from beads_hub.state import SyncState
 
 
 class MemoryBeads(sync.Beads):
@@ -34,7 +36,9 @@ class MemoryBeads(sync.Beads):
             assert "--limit" in args and args[args.index("--limit") + 1] == "0"
             return copy.deepcopy(list(self.rows.values()))
         if args[0] == "create":
-            bead_id = f"hub-{len(self.rows) + 1}"
+            epic = args[args.index("--type") + 1] == "epic"
+            count = sum((row.get("issue_type") == "epic") == epic for row in self.rows.values())
+            bead_id = f"hub-{'epic-' if epic else ''}{count + 1}"
             self.rows[bead_id] = {"id": bead_id, "status": "open", "labels": [], "metadata": {}}
             self._update(self.rows[bead_id], args[1:])
             return copy.deepcopy(self.rows[bead_id])
@@ -78,7 +82,10 @@ class MemoryBeads(sync.Beads):
                 elif flag == "--remove-label":
                     bead["labels"].remove(label)
             else:
-                bead[flag.removeprefix("--").replace("-", "_")] = value
+                field = (
+                    "issue_type" if flag == "--type" else flag.removeprefix("--").replace("-", "_")
+                )
+                bead[field] = value
 
 
 @pytest.mark.parametrize(
@@ -123,7 +130,7 @@ def test_repeat_sync_preserves_local_triage_and_updates_source() -> None:
     local["metadata"]["other"] = {"keep": True}
     source.rows[0].update({"title": "New title", "reviewDecision": "APPROVED", "labels": ["new"]})
     result = sync.reconcile(source, beads, "user:@me")
-    assert result["status"] == "complete" and len(beads.rows) == 1
+    assert result["status"] == "complete" and len(beads.rows) == 2
     assert local["title"].endswith("New title")
     assert local["priority"] == 1 and local["notes"] == "Local reasoning"
     assert local["assignee"] == "maintainer" and local["status"] == "open"
@@ -161,7 +168,7 @@ def test_absence_requires_explicit_closure_and_reopen() -> None:
     assert beads.rows["hub-1"]["status"] == "closed"
     source.rows = [row]
     sync.reconcile(source, beads, "user:@me")
-    assert len(beads.rows) == 1 and beads.rows["hub-1"]["status"] == "open"
+    assert len(beads.rows) == 2 and beads.rows["hub-1"]["status"] == "open"
 
 
 def test_locally_closed_bead_still_observes_upstream_closure() -> None:
@@ -196,7 +203,7 @@ def test_polling_converges_across_item_lifecycle() -> None:
     source.states = {row["id"]: copy.deepcopy(row) for row in source.rows}
     assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
     issue_bead, pr_bead = beads.rows["hub-1"], beads.rows["hub-2"]
-    assert len(beads.rows) == 2 and beads.edges == {("hub-1", "hub-2")}
+    assert len(beads.rows) == 3 and beads.edges == {("hub-1", "hub-2")}
     assert pr_bead["status"] == "open"
     pr["reviewDecision"] = "APPROVED"
     issue["title"] = "Updated upstream"
@@ -215,7 +222,7 @@ def test_polling_converges_across_item_lifecycle() -> None:
     source.rows = [issue]
     assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
     assert issue_bead["status"] == "open" and pr_bead["status"] == "closed"
-    assert len(beads.rows) == 2
+    assert len(beads.rows) == 3
 
 
 def test_scope_change_preserves_other_repo() -> None:
@@ -237,7 +244,7 @@ def test_repository_rename_uses_node_identity() -> None:
     source.rows = [item(repo=renamed)]
     source.repos = [renamed]
     sync.reconcile(source, beads, "user:@me")
-    assert len(beads.rows) == 1
+    assert len(beads.rows) == 2
     assert beads.rows["hub-1"]["external_ref"] == "gh:example/renamed#issue:1"
     assert "repo:example/orbit" not in beads.rows["hub-1"]["labels"]
 
@@ -250,6 +257,8 @@ def test_cross_repo_links_and_removed_references() -> None:
     source, beads = FixtureGitHub([pr, issue], [other, repository()]), MemoryBeads()
     assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
     assert beads.edges == {("hub-2", "hub-1")}
+    assert beads.rows["hub-1"]["parent"] == "hub-epic-1"
+    assert beads.rows["hub-2"]["parent"] == "hub-epic-2"
     beads.edges.add(("hub-2", "manual-blocker"))
     pr["closingIssuesReferences"]["nodes"] = []
     sync.reconcile(source, beads, "user:@me")
@@ -276,7 +285,7 @@ def test_incomplete_repo_is_not_written() -> None:
     source.failed_repos.add("R_1")
     result = sync.reconcile(source, beads, "user:@me")
     assert result["status"] == "partial" and result["issues"] == 1
-    assert len(beads.rows) == 1
+    assert len(beads.rows) == 2
     assert beads.rows["hub-1"]["external_ref"] == "gh:example/other#issue:1"
 
 
@@ -299,7 +308,7 @@ def test_interrupted_create_can_reconcile_later_closure(monkeypatch: pytest.Monk
 
     def interrupted_update(*args: str) -> Any:
         """Fail immediately after creating the source-backed bead."""
-        if args[0] == "update":
+        if args[0] == "update" and args[1] == "hub-1":
             raise RuntimeError("Synthetic interrupted first update")
         return original(*args)
 
@@ -309,7 +318,7 @@ def test_interrupted_create_can_reconcile_later_closure(monkeypatch: pytest.Monk
     source.rows = []
     source.states[row["id"]] = dict(row, state="CLOSED")
     assert sync.reconcile(source, beads, "user:@me")["closed"] == 1
-    assert len(beads.rows) == 1 and beads.rows["hub-1"]["status"] == "closed"
+    assert len(beads.rows) == 2 and beads.rows["hub-1"]["status"] == "closed"
 
 
 def test_status_update_guards_against_new_claim(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -406,3 +415,91 @@ def test_uninitialized_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     """Startup races report an explicit failure without creating a second database."""
     monkeypatch.setenv("BEADS_WORKING_DIR", str(tmp_path))
     assert sync.run_sync()["status"] == "partial"
+
+
+def test_repository_epics_include_empty_repositories_and_survive_rename() -> None:
+    """Every selected repository has one stable epic, retaining local planning fields."""
+    empty = repository("example/empty", "R_2")
+    source = FixtureGitHub([item(), item("pr", 2)], [repository(), empty])
+    beads = MemoryBeads()
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    epics = [row for row in beads.rows.values() if row["issue_type"] == "epic"]
+    assert len(epics) == 2 and len(beads.rows) == 4
+    epic = next(row for row in epics if row["metadata"]["hub"]["repo_id"] == "R_1")
+    assert beads.rows["hub-1"]["parent"] == beads.rows["hub-2"]["parent"] == epic["id"]
+    assert sync.reconcile(source, beads, "user:@me")["writes"] == 0
+    epic.update(priority=1, assignee="maintainer", notes="Repository plan", status="deferred")
+    epic["labels"].append("category:planning")
+    epic["metadata"]["local"] = {"keep": True}
+    renamed = repository("example/renamed")
+    source.repos = [renamed, empty]
+    for row in source.rows:
+        row["repository"]["nameWithOwner"] = renamed["full_name"]
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert len(beads.rows) == 4 and epic["external_ref"] == "gh:example/renamed#repository"
+    assert epic["title"] == "example/renamed" and "example/renamed" in epic["description"]
+    assert set(epic["labels"]) == {"repo:example/renamed", "type:repository", "category:planning"}
+    assert epic["priority"] == 1 and epic["assignee"] == "maintainer"
+    assert epic["notes"] == "Repository plan" and epic["status"] == "deferred"
+    assert epic["metadata"]["local"] == {"keep": True}
+    assert sync.reconcile(source, beads, "user:@me")["writes"] == 0
+
+
+def test_existing_imports_gain_repository_parent_with_empty_delta(tmp_path: Path) -> None:
+    """Migrate old closed imports without refreshing their local workflow fields."""
+    source, beads = FixtureGitHub([]), MemoryBeads()
+    legacy = beads.upsert(dict(item(), state="CLOSED"), None)
+    local = beads.rows[legacy["id"]]
+    local.update(priority=1, assignee="maintainer", notes="Keep reasoning")
+    beads.edges.add((local["id"], "manual-blocker"))
+    state = SyncState(tmp_path / "progress.json")
+    started = time.time() - 60
+    state.mark_success(repository(), started=started, finished=started + 1, full=True)
+    assert sync.reconcile(source, beads, "user:@me", state)["status"] == "complete"
+    assert local["parent"] == "hub-epic-1" and local["status"] == "closed"
+    assert local["priority"] == 1 and local["assignee"] == "maintainer"
+    assert local["notes"] == "Keep reasoning" and beads.edges == {(local["id"], "manual-blocker")}
+    assert source.node_calls == []
+    assert sync.reconcile(source, beads, "user:@me", state)["writes"] == 0
+
+
+def test_parent_failure_retains_checkpoint_and_replays(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hierarchy write failure leaves durable coverage unchanged and is repairable."""
+    source, beads = FixtureGitHub([item()]), MemoryBeads()
+    state = SyncState(tmp_path / "progress.json")
+    sync.reconcile(source, beads, "user:@me", state)
+    checkpoint = state.data["repositories"]["R_1"]["checkpoint"]
+    beads.rows["hub-1"].pop("parent")
+    call = beads.call
+
+    def fail_parent(*args: str) -> Any:
+        """Fail only the parent change after all source reads have completed."""
+        if "--parent" in args:
+            raise RuntimeError("Synthetic parent failure")
+        return call(*args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(beads, "call", fail_parent)
+        assert sync.reconcile(source, beads, "user:@me", state)["status"] == "partial"
+    saved = SyncState(state.path)
+    assert saved.data["repositories"]["R_1"]["checkpoint"] == checkpoint
+    assert sync.reconcile(source, beads, "user:@me", saved)["status"] == "complete"
+    assert beads.rows["hub-1"]["parent"] == "hub-epic-1" and len(beads.rows) == 2
+
+
+@pytest.mark.parametrize("destination_first", [False, True])
+def test_transferred_issue_keeps_destination_parent(destination_first: bool) -> None:
+    """A transferred item's new parent survives either repository processing order."""
+    origin, destination = repository(), repository("example/other", "R_2")
+    row = item()
+    source, beads = FixtureGitHub([row], [origin, destination]), MemoryBeads()
+    sync.reconcile(source, beads, "user:@me")
+    row["repository"] = {"id": destination["node_id"], "nameWithOwner": destination["full_name"]}
+    source.states[row["id"]] = copy.deepcopy(row)
+    source.repos = [destination, origin] if destination_first else [origin, destination]
+    assert sync.reconcile(source, beads, "user:@me")["status"] == "complete"
+    assert beads.rows["hub-1"]["parent"] == "hub-epic-2" and len(beads.rows) == 3
+    assert sync.reconcile(source, beads, "user:@me")["writes"] == 0

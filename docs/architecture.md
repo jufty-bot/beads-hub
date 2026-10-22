@@ -16,6 +16,10 @@ Compose's named `data` volume mounts at `/var/lib/beads` in every container. `.b
 
 External references use `gh:OWNER/REPO#issue:NUMBER` and `gh:OWNER/REPO#pr:NUMBER`. Beads IDs remain independent. Structured `metadata.hub` records GitHub node ID, repository node ID, source kind/number/state, last sync-owned status, and managed blocking-issue IDs. Stable node IDs prevent duplicates on repository renames; the external reference and repository label are refreshed. Duplicate existing identities fail the pass instead of choosing a row silently. All Beads lookups use `--all --limit 0 --flat --json`.
 
+Each selected repository also has one Beads epic, including repositories with no open work. Its external reference is `gh:OWNER/REPO#repository`; `metadata.hub` stores the repository node ID as both `node_id` and `repo_id`, with `kind=repository`. The epic title is `OWNER/REPO`, and its labels include `repo:OWNER/REPO` and `type:repository`. Renames refresh the same epic. Repository epics are excluded from issue/PR source-state verification and counts. Their status, assignee, priority, notes, comments, and local labels remain local; sync maintains their epic type and source identity/text. They are not automatically closed when children close or a repository leaves the configured scopes.
+
+Sync owns each imported issue/PR's parent and repairs it with `bd update --parent EPIC_ID`, including existing closed imports and items absent from a delta. Other dependency types remain independent of this hierarchy. Repository reads and validation finish before epic or parent writes; hierarchy failures prevent that repository's checkpoint from advancing. Unchanged epic and parent state produces no writes.
+
 ### Source metadata
 
 `metadata.hub.github` holds selected source facts, distinct from local Beads fields:
@@ -45,6 +49,7 @@ The description shows a compact source summary before the GitHub body. A source 
 | Status | Automatic for unclaimed items still matching the last sync-owned status; claims and manual overrides are retained |
 | Closure | Explicit GitHub CLOSED/MERGED always wins; absent search/list results never imply closure |
 | Blocking dependencies | Only edges created by the hub are removed by the hub |
+| Repository epic type and imported issue/PR parent | Sync maintains one epic per repository and attaches its imported work |
 
 `hub:manual-status` opts out of automatic open/in-progress selection. A changed status is also recognized by comparing it to `synced_status`. Upstream reopening restores an item previously closed by sync; a retained claim resumes in progress. Local close while GitHub is open remains local. Source-only edits belong in GitHub, since sync refreshes them.
 
@@ -52,7 +57,7 @@ Closing a bead locally does not stop source-state verification. Changed closed i
 
 ## PR readiness
 
-All imports are Beads tasks distinguished by `type:issue` or `type:pr`. PRs with failing/error checks, unknown checks, conflicts, unknown mergeability, requested changes, or missing approval on a non-draft PR are `open`. Signal labels explain the reason. Other PRs are `in_progress`; pending checks are labeled `ci:pending` and draft PRs `draft:true`. Missing checks mean unknown, not passing. This deterministic policy is a triage aid, not proof that repository merge policy is satisfied.
+Issue and PR imports start as Beads tasks distinguished by `type:issue` or `type:pr`. PRs with failing/error checks, unknown checks, conflicts, unknown mergeability, requested changes, or missing approval on a non-draft PR are `open`. Signal labels explain the reason. Other PRs are `in_progress`; pending checks are labeled `ci:pending` and draft PRs `draft:true`. Missing checks mean unknown, not passing. This deterministic policy is a triage aid, not proof that repository merge policy is satisfied.
 
 For an indexed closing issue, `bd dep add ISSUE_ID PR_ID` means the issue depends on the PR. Beads computes the blocked queue; the issue's stored status stays open. Reconciliation exhausts the GraphQL closing-reference connection, supports cross-repository node IDs, prunes removed managed links, and preserves existing manual dependencies. Metadata records add intent before the command so an interrupted add can be retried. Each dependency command failure is reported; cycle errors are not suppressed.
 
@@ -73,6 +78,8 @@ Unchanged snapshots skip `bd update`; existing dependencies are checked before a
 ## Failure and concurrency
 
 GitHubKit uses an injected `GH_TOKEN`, a 30-second HTTP timeout, no persistent HTTP cache, and no automatic SDK retries. REST Link pagination and repository inventories remain uncapped by search. GraphQL errors, inaccessible nodes, malformed records, and failed pages prevent that repository from being refreshed. Other repositories may succeed. Scopes are resolved before writes and do not authorize closing records outside the current inventory.
+
+`GH_SYNC_QUERY` supplies persistent inventory scopes. Repeated CLI `--repo OWNER/REPO` flags or the MCP trigger's optional `repositories` list replace these scopes for that invocation, using only explicit repository lookups. Omitting selection retains configured behavior; an empty or malformed list is rejected. A selected loop keeps its selection on every pass. Unselected repositories retain stored snapshots, epics, and checkpoints; the selection does not reconfigure a separate periodic worker. Selected PRs can still reconcile closing dependencies against already indexed cross-repository issues.
 
 Primary exhaustion and throttling honor reset/Retry-After deadlines, with a 60-second fallback when no deadline is provided. The shared cooldown stops further repository requests and is saved across restarts/manual/MCP triggers; already in-flight reads may finish. REST pagination checks each page's remaining budget before allowing a following page. GraphQL reads request `rateLimit` evidence and handle rate-limit errors even with HTTP 200. The worker keeps its normal interval and skips network access until the cooldown expires. The cooldown conservatively pauses both REST and GraphQL. Authentication failures, timeouts, and server errors remain visible partial passes. Errors report operation/type/status without copying arbitrary API error bodies. REST requests pin API version `2022-11-28`; GraphQL follows GitHub's live schema.
 

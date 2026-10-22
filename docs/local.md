@@ -59,6 +59,8 @@ uv run --locked beads-hub-sync --loop --interval 120
 
 Keep one poller running while you want automatic updates. The CLI defaults to the current repository for database access, sync locking, and progress. Use `--interval` for the native pause; `GH_SYNC_INTERVAL` configures the Compose command. Repository scopes, incremental reads, PR evidence refresh, and local-field ownership are the same in both deployments.
 
+To sync only named repositories, set `GH_SYNC_QUERY='repo:example/api;repo:example/web'` or pass repeated `--repo` flags, for example `uv run --locked beads-hub-sync --repo example/api --repo example/web --loop`. Flags replace configured scopes for that process. Each selected GitHub repository becomes an epic containing its imported issues and PRs. See [selection and epic behavior](usage.md#select-repositories).
+
 From another terminal in that repository:
 
 ```sh

@@ -96,8 +96,12 @@ def test_failures_replay_without_advancing_checkpoint(
     assert saved.data["repositories"]["R_1"]["error"]
     source.failed_repos.clear()
     assert sync.reconcile(source, beads, "user:@me", saved)["status"] == "complete"
-    assert len(beads.rows) == 2
-    assert all(row["title"].endswith("New upstream title") for row in beads.rows.values())
+    assert len(beads.rows) == 3
+    assert all(
+        row["title"].endswith("New upstream title")
+        for row in beads.rows.values()
+        if row["metadata"]["hub"]["kind"] != "repository"
+    )
     assert saved.data["repositories"]["R_1"]["error"] is None
     assert saved.data["repositories"]["R_1"]["checkpoint"] > checkpoint
 
@@ -161,7 +165,7 @@ def test_delta_imports_work_created_and_closed_between_polls(tmp_path: Path) -> 
     sync.reconcile(source, beads, "user:@me", state)
     source.rows = [dict(item(number=2), state="CLOSED")]
     result = sync.reconcile(source, beads, "user:@me", state)
-    assert result["closed"] == 1 and len(beads.rows) == 2
+    assert result["closed"] == 1 and len(beads.rows) == 3
     assert beads.rows["hub-1"]["status"] == "open"
     assert beads.rows["hub-2"]["status"] == "closed"
 
