@@ -16,6 +16,7 @@ def repository(name: str = "example/orbit", node_id: str = "R_1") -> sync.Json:
 def item(kind: str = "issue", number: int = 1, repo: sync.Json | None = None) -> sync.Json:
     """Create a source snapshot with approved, passing PR defaults."""
     repo = repo or repository()
+    path = "pull" if kind == "pr" else "issues"
     result = {
         "id": f"{repo['node_id']}_{kind}_{number}",
         "__typename": "PullRequest" if kind == "pr" else "Issue",
@@ -24,7 +25,7 @@ def item(kind: str = "issue", number: int = 1, repo: sync.Json | None = None) ->
         "title": "Synthetic work",
         "body": "Synthetic source body",
         "state": "OPEN",
-        "url": f"https://github.com/{repo['full_name']}/issues/{number}",
+        "url": f"https://github.com/{repo['full_name']}/{path}/{number}",
         "repository": {"id": repo["node_id"], "nameWithOwner": repo["full_name"]},
         "labels": ["bug", "label,with,commas"],
         "isDraft": False,
@@ -32,6 +33,10 @@ def item(kind: str = "issue", number: int = 1, repo: sync.Json | None = None) ->
         "reviewDecision": "APPROVED",
         "headRefName": "fix/synthetic",
         "headRefOid": "a" * 40,
+        "headRepository": {
+            "nameWithOwner": "contributor/orbit",
+            "url": "https://github.com/contributor/orbit",
+        },
         "baseRefName": "main",
         "baseRefOid": "b" * 40,
         "mergeStateStatus": "CLEAN",
@@ -56,8 +61,17 @@ def item(kind: str = "issue", number: int = 1, repo: sync.Json | None = None) ->
         **source_metadata(
             {
                 "html_url": result["url"],
-                "user": {"login": "synthetic-author", "type": "User"},
-                "assignees": [{"login": "synthetic-assignee"}],
+                "user": {
+                    "login": "synthetic-author",
+                    "type": "User",
+                    "html_url": "https://github.com/synthetic-author",
+                },
+                "assignees": [
+                    {
+                        "login": "synthetic-assignee",
+                        "html_url": "https://github.com/synthetic-assignee",
+                    }
+                ],
                 "created_at": "2026-10-19T12:00:00Z",
                 "updated_at": "2026-10-20T12:00:00Z",
                 "comments": 4,

@@ -94,8 +94,8 @@ GitHub labels use the `github:` namespace and percent-encoded names: `bug` becom
 
 | Information | Owner and update behavior |
 | --- | --- |
-| Title, description, source link | Refreshed from GitHub; descriptions include a source summary and body |
-| Repository, source labels, PR signals | Sync-owned `repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, and `draft:` labels |
+| Title, description, source link | Refreshed from GitHub; descriptions include an attention summary, linked table, and original body |
+| Repository, source labels, PR signals | Sync-owned `repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, `draft:`, `size:`, `author:`, `links:`, and `resolution:` labels |
 | GitHub metadata | Refreshed under `metadata.hub.github` |
 | Priority, Beads assignee, notes, comments, local labels and issue/PR type | Local workflow; retained by sync |
 | Repository epic type and imported issue/PR parent | Maintained by sync |
@@ -112,6 +112,8 @@ The source snapshot includes:
 - **PR evidence:** draft/mergeability/review/CI state, head/base branches and SHAs, additions/deletions/files/commits, cross-repository flag, and merge date.
 
 Reviewer details are bounded to 100 with explicit total/coverage fields. Closing-issue references are fully paginated. Comment bodies, diffs, full source payloads, and event history are not imported. See the [metadata contract](docs/architecture.md#source-metadata) for exact fields and observation semantics.
+
+Descriptions link to GitHub items/repositories, authors and assignees, milestones, requested reviewers/teams, fork-aware branch snapshots, PR checks/review pages, and closing issues. Generated table text is escaped; the original GitHub body remains intact below a separator. The `size:s/m/l` filters describe added+deleted lines (under 100 / 100–499 / 500+). `author:bot`, `links:closing-issue`, and `resolution:merged`/`resolution:not-planned` expose additional factual queues. These fields use existing source requests and preserve local priority and categories. See [triage usage](docs/usage.md#operate-and-triage).
 
 ### PR readiness and dependencies
 
@@ -307,6 +309,7 @@ Application code lives in `src/beads_hub` and uses the `uv_build` backend. Devel
 src/beads_hub/
 ├── __init__.py
 ├── github.py       # GitHubKit requests, pagination, source snapshots, bounded reads
+├── description.py  # Linked Markdown tables, source escaping, attention summaries
 ├── sync.py         # Beads CLI adapter, ownership rules, reconciliation, polling CLI
 ├── state.py        # Incremental cursors, repair selection, atomic progress persistence
 ├── runtime.py      # Startup readiness and database-scoped SQL account setup
@@ -348,7 +351,7 @@ The smoke workflow uses synthetic GitHub records with real Beads, Dolt, UI, and 
 
 ## Current scope and validation
 
-The current implementation has 112 passing offline tests, source/wheel build validation, and native ARM64 macOS and AMD64 Linux embedded Dolt/concurrent polling/stdio/persistence validation. A prior ARM64 Compose smoke pass covers installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. The updated repository epic assertions await a Compose rerun because Docker is unavailable in the current validation environment. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 image build, full browser interaction suite, and backup/restore exercise remain unverified.
+The current implementation has 129 passing offline tests, source/wheel build validation, native ARM64 macOS and AMD64 Linux embedded Dolt/concurrent polling/stdio/persistence validation, and linked-table Markdown/sanitization checks. A prior ARM64 Compose smoke pass covers installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. The updated repository epic and linked-description assertions await a Compose rerun because Docker is unavailable in the current validation environment. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 image build, full browser interaction suite, and backup/restore exercise remain unverified.
 
 Current boundaries include polling rather than webhooks, one shared backlog rather than tenant isolation or HA, selected source snapshots rather than complete conversations/diffs/history, and human/agent categorization rather than automatic classification. There is no GitHub write-back, automatic freshness alerting, or migration from the earlier SQLite application.
 

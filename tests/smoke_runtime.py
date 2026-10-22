@@ -50,7 +50,7 @@ def main() -> None:
     assert snapshot["author"]["login"] == "synthetic-author"
     assert snapshot["assignees"] == ["synthetic-assignee"]
     assert snapshot["pull_request"]["head_sha"] == "a" * 40
-    assert "fix/synthetic -> main" in rows["pr"]["description"]
+    assert "[fix/synthetic](https://github.com/contributor/orbit/tree/" in rows["pr"]["description"]
     ready = {row["id"] for row in beads.call("ready", "--limit", "0")}
     assert pr_id in ready and issue_id not in ready
     source.rows = [dict(issue, state="CLOSED"), pr]

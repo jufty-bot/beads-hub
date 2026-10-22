@@ -141,6 +141,7 @@ def test_repeat_sync_preserves_local_triage_and_updates_source() -> None:
         "github:new",
         "ci:passing",
         "review:approved",
+        "size:s",
     }
     assert local["metadata"]["other"] == {"keep": True}
 
@@ -363,7 +364,7 @@ def test_metadata_refresh_preserves_local_fields() -> None:
     assert snapshot["author"]["login"] == "synthetic-author"
     assert snapshot["assignees"] == ["synthetic-assignee"]
     assert snapshot["pull_request"]["head_sha"] == "a" * 40
-    assert "fix/synthetic -> main" in bead["description"]
+    assert "[fix/synthetic](https://github.com/contributor/orbit/tree/" in bead["description"]
     assert "Synthetic milestone" in bead["description"]
     assert bead["description"].endswith(row["body"])
     bead.update(assignee="local-maintainer", notes="Keep this", priority=1)

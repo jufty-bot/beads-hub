@@ -1,6 +1,6 @@
 # Architecture and contracts
 
-Python lives in the installable `src/beads_hub` package. `github.py` contains the read-only GitHubKit adapter. It uses synchronous REST and GraphQL calls, with SDK-managed authentication, HTTP sessions, and REST Link pagination; it does not invoke `gh`. `sync.py` contains the `Beads` CLI adapter and reconciliation policy, `state.py` persists polling progress, and `runtime.py` handles readiness and SQL provisioning. `mcp.py` serves the official beads-mcp instance, which owns all standard tool schemas, resource registration, and workspace context handling. The hub wrapper adds one synchronous trigger; it does not reimplement official tools.
+Python lives in the installable `src/beads_hub` package. `github.py` contains the read-only GitHubKit adapter. It uses synchronous REST and GraphQL calls, with SDK-managed authentication, HTTP sessions, and REST Link pagination; it does not invoke `gh`. `sync.py` contains the `Beads` CLI adapter and reconciliation policy, `description.py` renders linked source summaries, `state.py` persists polling progress, and `runtime.py` handles readiness and SQL provisioning. `mcp.py` serves the official beads-mcp instance, which owns all standard tool schemas, resource registration, and workspace context handling. The hub wrapper adds one synchronous trigger; it does not reimplement official tools.
 
 `pyproject.toml` declares the `uv_build` backend and console entrypoints `beads-hub-sync`, `beads-hub-mcp`, and `beads-hub-runtime`. `uv sync --locked` installs the package editable for development; tests import that package without adding source directories to Python's search path. The Docker image installs the package non-editable with locked runtime dependencies, and Compose and shell entrypoints invoke its installed commands. `scripts/` contains only shell startup and smoke helpers. `task package` builds a source distribution and wheel with uv.
 
@@ -27,23 +27,26 @@ Sync owns each imported issue/PR's parent and repairs it with `bd update --paren
 | Fields | Content |
 | --- | --- |
 | `url`, `author`, `author_association`, `assignees` | Upstream link, author login/type and relationship, GitHub assignee logins |
+| `links` | Canonical source URLs for the author, assignees keyed by login, and milestone; missing destinations remain null/absent |
 | `milestone` | Number, title, state, due date, or null |
 | `created_at`, `updated_at`, `closed_at`, `state_reason` | Source dates and closure reason |
 | `comment_count`, `locked` | Conversation size and lock flag; no comment bodies |
 | `repository` | Visibility, default branch, primary language, stars, fork flag |
 | `observed_at` | UTC time of the source observation; GitHub's update date alone does not establish CI freshness |
-| `pull_request` | Draft, mergeability and merge state, review decision, latest CI state, head/base branch names and SHAs, additions/deletions/files/commits, cross-repository flag, merge date, requested reviewers |
+| `pull_request` | Draft, mergeability and merge state, review decision, latest CI state, head/base branch names and SHAs, nullable head repository identity/URL, additions/deletions/files/commits, cross-repository flag, merge date, requested reviewers with URLs, and fully paginated closing-issue identities/URLs/repositories |
 
 Requested reviewers include the first 100 entries, with `requested_reviewers_total` and `requested_reviewers_complete` making coverage explicit. User/bot logins and team organization/slug are selected; other reviewer types retain their type only. Closing-issue references are fully paginated independently of this bounded display metadata. Source profiles, emails, conversations, patches, and complete payloads are not imported.
 
-The description shows a compact source summary before the GitHub body. A source read refreshes the snapshot, including cleared assignments, milestone, and reviewers, only when facts or source-owned Beads fields differ. `observed_at` stays unchanged when the facts are unchanged; it records when the stored snapshot was observed, not the latest successful poll. Use repository `last_success_at` in polling state for coverage freshness. A direct node read refreshes closure/PR evidence and retains last-known REST facts such as author and comment count. All-state deltas can refresh later edits to closed items. Snapshot fields are observations, not a history or a guarantee that all fields were read simultaneously.
+The description starts with a deterministic attention summary derived from existing source signals, followed by a two-column Markdown table and the original GitHub body verbatim after a separator. Links cover the source item, repository, people/teams, milestone, branch snapshots, PR checks/review pages, and closing issues, including issues outside selected repositories. Branch links prefer observed commit SHAs and use the actual fork; an unavailable fork retains plain branch text. Profile URLs prefer GitHub's canonical URLs, including `/apps/` bot profiles. Missing source facts use `Unknown`, known empty collections use `None`, and incomplete reviewer coverage is explicit. Source table text is escaped, URLs are encoded, and only absolute HTTP(S) destinations become links. The upstream body remains unmodified; the UI owns its Markdown sanitization.
+
+A source read refreshes the snapshot, including cleared assignments, milestone, and reviewers, only when facts or source-owned Beads fields differ. `observed_at` stays unchanged when the facts are unchanged; it records when the stored snapshot was observed, not the latest successful poll. Use repository `last_success_at` in polling state for coverage freshness. A direct node read refreshes closure/PR evidence, description and derived labels while retaining last-known REST facts such as author, source labels, and comment count. All-state deltas can refresh later edits to closed items. Snapshot fields are observations, not a history or a guarantee that all fields were read simultaneously.
 
 ## Ownership
 
 | Field | Owner / update behavior |
 | --- | --- |
 | Title, description, external reference | GitHub snapshot, refreshed by sync |
-| `repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, `draft:` labels | Sync adds/removes individual labels |
+| `repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, `draft:`, `size:`, `author:`, `links:`, `resolution:` labels | Sync adds/removes individual labels |
 | Other labels, priority, notes, comments, assignee, local issue type | Local workflow, retained |
 | `metadata.hub` | Reconciler; `--metadata` merges it without replacing unrelated metadata |
 | Status | Automatic for unclaimed items still matching the last sync-owned status; claims and manual overrides are retained |
@@ -58,6 +61,8 @@ Closing a bead locally does not stop source-state verification. Changed closed i
 ## PR readiness
 
 Issue and PR imports start as Beads tasks distinguished by `type:issue` or `type:pr`. PRs with failing/error checks, unknown checks, conflicts, unknown mergeability, requested changes, or missing approval on a non-draft PR are `open`. Signal labels explain the reason. Other PRs are `in_progress`; pending checks are labeled `ci:pending` and draft PRs `draft:true`. Missing checks mean unknown, not passing. This deterministic policy is a triage aid, not proof that repository merge policy is satisfied.
+
+Additional factual filters use existing reads: PR `size:s` means fewer than 100 added+deleted lines, `size:m` means 100–499, and `size:l` means 500 or more; missing/invalid counts produce no size label. `author:bot` requires GitHub's explicit Bot author type. `links:closing-issue` means the PR has authoritative closing references, regardless of whether the targets are locally indexed. `resolution:merged` reflects verified upstream merging; `resolution:not-planned` reflects explicit upstream closure reason. Source changes/reopening remove obsolete filters. None of these labels change Beads priority or imply effort estimates. They add no API requests; canonical reviewer/fork/closing URLs extend the existing GraphQL selection.
 
 For an indexed closing issue, `bd dep add ISSUE_ID PR_ID` means the issue depends on the PR. Beads computes the blocked queue; the issue's stored status stays open. Reconciliation exhausts the GraphQL closing-reference connection, supports cross-repository node IDs, prunes removed managed links, and preserves existing manual dependencies. Metadata records add intent before the command so an interrupted add can be retried. Each dependency command failure is reported; cycle errors are not suppressed.
 

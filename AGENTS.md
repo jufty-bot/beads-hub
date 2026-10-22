@@ -49,7 +49,7 @@ bd update <bead-id> --priority 1 --add-label category:bug-fix
 bd comments add <bead-id> 'Triage rationale and next action'
 ```
 
-`repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, and `draft:` labels are sync-owned. Local categories use a separate namespace, for example `category:documentation`. Source text is refreshed; put local reasoning in notes or comments. Claims and manually changed statuses survive sync. Add `hub:manual-status` to explicitly opt out of automatic open/in-progress selection. Verified upstream closure still closes the bead.
+`repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, `draft:`, `size:`, `author:`, `links:`, and `resolution:` labels are sync-owned. Local categories use a separate namespace, for example `category:documentation`. Source text is refreshed; put local reasoning in notes or comments. Claims and manually changed statuses survive sync. Add `hub:manual-status` to explicitly opt out of automatic open/in-progress selection. Verified upstream closure still closes the bead.
 
 Dependencies drive readiness; a blocked issue may still have stored `status=open`. Use `bd blocked` and `bd ready` instead of inferring readiness from status alone.
 

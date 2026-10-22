@@ -11,13 +11,16 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | GitHub progress visibility | Implemented in atomic shared-volume JSON state and `task sync-status` | Last successful coverage/errors per repository and durable rate cooldowns; database health alone is insufficient |
 | Automatic freshness alerts | Pending | Alert on stale/failed source coverage independently of database health |
 | Informative GitHub metadata | Implemented in `metadata.hub.github` and description summaries | Selected source facts; bounded reviewer details, no conversations/diffs |
+| Linked triage descriptions and factual filters | Implemented with attention summaries, Markdown tables, canonical source links, fork snapshots, closing references, and size/bot/link/resolution labels | Existing reads only; body remains verbatim; missing facts and incomplete reviewer coverage are explicit |
+| Detailed checks and review threads | Pending | Bounded check names/details URLs and unresolved review-thread evidence |
+| Repository overview and explicit issue blockers | Pending | Epic rollups on read and source-owned issue-to-issue dependencies |
 | Source and local triage separation | Implemented | Classification is supplied by humans/agents |
 | PR signal triage and closing dependencies | Implemented | Latest signals, indexed closing targets, GitHub's recognized references |
 | Shared CLI, UI, official MCP | Implemented | Trusted clients; one database |
 | Local embedded Dolt and stdio MCP | Implemented as the local default with repository-local storage and no SQL listener | Current-directory or explicit workspace; native ARM64 initialization, concurrent poller/MCP access, shared locking, and persistence verified with `task smoke-local` |
 | Python source package and uv workflows | Implemented in `src/beads_hub` with the uv build backend and installed sync/MCP/runtime commands | Locked editable development install, non-editable Docker install, source distribution and wheel via `task package` |
 | Unified image and Docker Compose deployment | Implemented | Four services, one persistent volume, localhost ports; operator supplies runtime credentials |
-| Runtime and regression validation | 112 offline tests, installed CLI and stdio default checks, source/wheel builds, operation-count and repair-coverage regressions, native ARM64 macOS and AMD64 Linux embedded Dolt validation, and prior Compose smoke coverage | Updated epic assertions await a Compose rerun; credentialed pilot, AMD64 image build, and full browser interactions remain unverified; see checklist |
+| Runtime and regression validation | 129 offline tests, installed CLI and stdio default checks, source/wheel builds, operation-count and repair-coverage regressions, native ARM64 macOS and AMD64 Linux embedded Dolt validation, linked table renderer checks, and prior Compose smoke coverage | Updated epic/link assertions await a Compose rerun; credentialed pilot, AMD64 image build, and full browser interactions remain unverified; see checklist |
 | Live multi-repository pilot | Pending | Needs an authorized GitHub credential and Docker host |
 | Backup/restore exercise | Pending | Requires storage/backup selection and a disposable restore target |
 

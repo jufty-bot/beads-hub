@@ -148,7 +148,25 @@ bd blocked --json
 
 GitHub labels appear as `github:<percent-encoded-name>` to avoid collisions with local categories and comma-based CLI filters. For example, `bug` becomes `github:bug` and `help wanted` becomes `github:help%20wanted`. The reconciler owns source title/description; put durable reasoning in Beads notes and comments. Beads priority and issue/PR type are local choices (imports start as `task`, priority 2); repository containers stay `epic`.
 
-Every bead also carries source facts under `metadata.hub.github`: author, upstream assignees, milestone, dates, comment count, repository details, and PR branch SHAs, size, reviewer requests, merge/review/CI state. Inspect these with `bd show <id> --json`; a short summary also appears in the description. GitHub assignees do not claim the bead. Repository grouping remains the `repo:OWNER/REPO` label, with stable repository identity in `metadata.hub.repo_id`.
+Every imported issue/PR also carries source facts under `metadata.hub.github`: author, upstream assignees, milestone, dates, comment count, repository details, and PR branch SHAs, size, reviewer requests, merge/review/CI state. Inspect these with `bd show <id> --json`. Descriptions show an attention summary and a linked two-column table, followed by the unchanged GitHub body. Links open the source item/repository, author and assignees, milestone, requested reviewers/teams, source branch snapshots (including forks), PR checks/review pages, and closing issues. Missing forks retain plain branch text; incomplete reviewer lists are marked. GitHub assignees do not claim the bead. Repository grouping remains the `repo:OWNER/REPO` label, with stable repository identity in `metadata.hub.repo_id`.
+
+New source filters are sync-owned:
+
+| Filter | Meaning |
+| --- | --- |
+| `size:s`, `size:m`, `size:l` | PR added+deleted lines: under 100, 100–499, or 500+; describes diff size, not effort |
+| `author:bot` | GitHub identifies the source author as a bot |
+| `links:closing-issue` | A PR has authoritative closing references, including targets outside selected scopes |
+| `resolution:merged` | Verified upstream PR merge |
+| `resolution:not-planned` | Explicit upstream not-planned closure reason |
+
+```sh
+bd ready --label 'type:pr,size:s' --json
+bd list --label 'author:bot' --json
+bd list --all --label 'resolution:merged' --json
+```
+
+Canonical author/assignee/milestone URLs are stored under `metadata.hub.github.links`; requested-reviewer URLs, `head_repository`, and fully paginated `closing_issues` live under `pull_request`. No extra API requests are needed for these fields. Existing descriptions and labels refresh when their source items are observed; `task sync-now -- --full` refreshes the current open inventory. Already-closed unchanged history is not reread merely to reformat it. The summary's source dates do not represent polling freshness.
 
 These are selected source observations, with the stored snapshot's `observed_at` timestamp. Reviewer details are bounded to 100 with explicit total/coverage fields; comment bodies, diffs, and history are not imported. See [source metadata](architecture.md#source-metadata) for fields and freshness limits. API throttling/exhaustion persists a cooldown from Retry-After/reset evidence; passes skip network requests until it expires, including after restarts. The SDK does not sleep through resets. Other network failures retry on subsequent polls.
 

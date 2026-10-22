@@ -37,6 +37,7 @@ query($id: ID!, $cursor: String) {
       updatedAt closedAt mergedAt
       isDraft mergeable mergeStateStatus reviewDecision
       headRefName headRefOid baseRefName baseRefOid
+      headRepository { nameWithOwner url }
       additions deletions changedFiles isCrossRepository
       commits(last: 1) {
         totalCount
@@ -47,14 +48,14 @@ query($id: ID!, $cursor: String) {
         nodes {
           requestedReviewer {
             __typename
-            ... on User { login }
-            ... on Bot { login }
-            ... on Team { slug organization { login } }
+            ... on User { login url }
+            ... on Bot { login url }
+            ... on Team { slug url organization { login } }
           }
         }
       }
       closingIssuesReferences(first: 100, after: $cursor) {
-        nodes { id number repository { id nameWithOwner } }
+        nodes { id number url repository { id nameWithOwner } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -92,6 +93,15 @@ def source_metadata(row: Json, repo: Json) -> Json:
         "milestone": {key: milestone.get(key) for key in ("number", "title", "state", "due_on")}
         if milestone
         else None,
+        "links": {
+            "author": author.get("html_url") if author else None,
+            "assignees": {
+                assignee["login"]: assignee["html_url"]
+                for assignee in row.get("assignees", [])
+                if assignee.get("html_url")
+            },
+            "milestone": milestone.get("html_url") if milestone else None,
+        },
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "closed_at": row.get("closed_at"),
@@ -129,6 +139,7 @@ def node_metadata(node: Json) -> Json:
         "review_decision": node["reviewDecision"],
         "head_ref": node["headRefName"],
         "head_sha": node.get("headRefOid"),
+        "head_repository": node.get("headRepository"),
         "base_ref": node.get("baseRefName"),
         "base_sha": node.get("baseRefOid"),
         "additions": node.get("additions"),
@@ -142,6 +153,7 @@ def node_metadata(node: Json) -> Json:
         "requested_reviewers_complete": (
             requests.get("totalCount") is not None and len(reviewers) == requests["totalCount"]
         ),
+        "closing_issues": node["closingIssuesReferences"]["nodes"],
     }
     commits = node["commits"]["nodes"]
     rollup = commits[-1]["commit"].get("statusCheckRollup") if commits else None

@@ -19,15 +19,28 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
+from beads_hub.description import describe
 from beads_hub.github import GitHub, RateLimited
 from beads_hub.state import SyncState
 
 Json = dict[str, Any]
 """JSON objects exchanged with GitHub and bd."""
 
-MANAGED_PREFIXES = ("repo:", "type:", "github:", "ci:", "conflict:", "review:", "draft:")
+MANAGED_PREFIXES = (
+    "repo:",
+    "type:",
+    "github:",
+    "ci:",
+    "conflict:",
+    "review:",
+    "draft:",
+    "size:",
+    "author:",
+    "links:",
+    "resolution:",
+)
 """Label namespaces owned exclusively by reconciliation."""
 
 
@@ -80,6 +93,20 @@ def evaluate(item: Json) -> tuple[str, set[str]]:
     """Derive source-owned signals; uncertain CI or mergeability remains actionable."""
     labels = {f"repo:{item['repository']['nameWithOwner']}", f"type:{item['kind']}"}
     labels.update(f"github:{quote(label, safe='')}" for label in item["labels"])
+    source = item.get("github") or {}
+    if (source.get("author") or {}).get("type") == "Bot":
+        labels.add("author:bot")
+    if item["kind"] == "pr":
+        additions, deletions = item.get("additions"), item.get("deletions")
+        if type(additions) is int and type(deletions) is int and additions >= 0 and deletions >= 0:
+            size = additions + deletions
+            labels.add("size:s" if size < 100 else "size:m" if size < 500 else "size:l")
+        if item["closingIssuesReferences"]["nodes"]:
+            labels.add("links:closing-issue")
+    if item["state"] == "MERGED":
+        labels.add("resolution:merged")
+    elif item["state"] == "CLOSED" and source.get("state_reason") == "not_planned":
+        labels.add("resolution:not-planned")
     if item["state"] != "OPEN":
         return "closed", labels
     if item["kind"] == "issue":
@@ -123,38 +150,6 @@ def csv_value(value: str) -> str:
     out = io.StringIO()
     csv.writer(out, lineterminator="").writerow([value])
     return out.getvalue()
-
-
-def describe(item: Json) -> str:
-    """Put a compact source summary before the body; local reasoning belongs in notes."""
-    lines = [f"Upstream {item['kind']}: {item['url']}"]
-    source = item.get("github") or {}
-    if source:
-        author = source.get("author") or {}
-        lines.append(
-            f"Author: {author.get('login') or 'unknown'} | "
-            f"Created: {source.get('created_at') or 'unknown'} | "
-            f"Updated: {source.get('updated_at') or 'unknown'}"
-        )
-        milestone = source.get("milestone") or {}
-        lines.append(
-            f"GitHub assignees: {', '.join(source.get('assignees') or []) or 'none'} | "
-            f"Milestone: {milestone.get('title') or 'none'} | "
-            f"Comments: {source.get('comment_count', 'unknown')}"
-        )
-        pr = source.get("pull_request")
-        if pr:
-            lines.extend(
-                [
-                    f"Branch: {pr.get('head_ref')} -> {pr.get('base_ref')} | "
-                    f"Changes: +{pr.get('additions')} / -{pr.get('deletions')} "
-                    f"in {pr.get('changed_files')} files",
-                    f"CI: {pr.get('ci_state') or 'unknown'} | "
-                    f"Review: {pr.get('review_decision') or 'none'} | "
-                    f"Merge: {pr.get('merge_state_status') or 'unknown'}",
-                ]
-            )
-    return "\n".join(lines) + f"\n\n{item.get('body') or ''}"
 
 
 def snapshot_metadata(source: Json, previous: Json) -> Json:
@@ -250,22 +245,18 @@ class Beads:
 
     def close_source(self, bead: Json, item: Json) -> None:
         """Apply verified closure and refresh evidence, retaining the last REST snapshot."""
-        hub = dict(bead["metadata"]["hub"])
-        hub.update(source_state=item["state"], synced_status="closed")
-        hub["github"] = snapshot_metadata(
-            {**hub.get("github", {}), **item.get("github", {})}, hub.get("github", {})
+        self.upsert(
+            {
+                **item,
+                "github": {**bead["metadata"]["hub"].get("github", {}), **item.get("github", {})},
+                "labels": [
+                    unquote(label.removeprefix("github:"))
+                    for label in bead.get("labels") or []
+                    if label.startswith("github:")
+                ],
+            },
+            bead,
         )
-        self.call(
-            "update",
-            bead["id"],
-            "--status",
-            "closed",
-            "--force",
-            "--metadata",
-            json.dumps({"hub": hub}),
-        )
-        bead["metadata"]["hub"] = hub
-        bead["status"] = "closed"
 
     def upsert(self, item: Json, bead: Json | None) -> Json:
         """Refresh a source snapshot without clearing categories, claims, notes, or priority."""
@@ -275,7 +266,7 @@ class Beads:
             f"[{item['repository']['nameWithOwner']} {item['kind']} #{item['number']}] "
             f"{item['title']}"
         )
-        description = describe(item)
+        description = describe(item, labels)
         identity = {
             "node_id": item["id"],
             "repo_id": item["repository"]["id"],
