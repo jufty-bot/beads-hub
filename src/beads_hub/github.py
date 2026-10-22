@@ -327,11 +327,23 @@ class GitHub:
             return {node["id"]: node for group in pool.map(partition, parts) for node in group}
 
     def items(
-        self, repo: Json, *, since: str | None = None, prs: list[Json] | None = None
+        self,
+        repo: Json,
+        *,
+        since: str | None = None,
+        prs: list[Json] | None = None,
+        full: bool = False,
     ) -> list[Json]:
-        """Stage an open inventory or all-state delta and refresh known PRs independently."""
+        """Stage repairs alongside all-state deltas, deduplicating before live PR reads."""
         query = urlencode({"state": "all", "since": since}) if since else "state=open"
-        rows = self.pages(f"repos/{repo['full_name']}/issues?{query}&sort=updated&direction=asc")
+        queries = ["state=open", query] if full and since else [query]
+        by_id: dict[str, Json] = {}
+        for query in queries:
+            for row in self.pages(
+                f"repos/{repo['full_name']}/issues?{query}&sort=updated&direction=asc"
+            ):
+                by_id[row["node_id"]] = row
+        rows = list(by_id.values())
         previous = {bead["metadata"]["hub"]["node_id"]: bead for bead in prs or []}
         details = self.nodes(
             [row["node_id"] for row in rows if "pull_request" in row] + list(previous)

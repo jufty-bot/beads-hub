@@ -3,10 +3,33 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
-from hub_runtime import configure_remote_access
+
+from beads_hub.runtime import configure_remote_access, wait_for_hub
+
+
+def test_wait_for_local_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Readiness checks the current repository through bd without probing a SQL listener."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BEADS_WORKING_DIR", raising=False)
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads/metadata.json").write_text("{}")
+    calls = 0
+
+    def info(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        """Confirm bd receives the local repository as its working directory."""
+        nonlocal calls
+        calls += 1
+        assert args[1:] == ["info", "--json"]
+        assert Path(kwargs["cwd"]).resolve() == tmp_path.resolve()
+        return subprocess.CompletedProcess(args, returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", info)
+    wait_for_hub(timeout=0.1)
+    assert calls == 1
 
 
 def test_remote_password_passed_only_on_stdin(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,9 +2,22 @@
 
 ## Development
 
-Python 3.11+, uv, Task, and Docker with the Compose plugin are required for the full validation workflow. `task install` runs `uv sync --locked`. `task fix`, `task lint`, `task check`, and `task test` cover formatting, lint, shell syntax, types, and token-free behavior tests. `task run -- <command>` runs inside the locked environment.
+Python 3.11+, uv, Task, and Docker with the Compose plugin are required for the full validation workflow. `task install` runs `uv sync --locked`, installing the `src/beads_hub` package editable and its development dependencies. `task fix`, `task lint`, `task check`, and `task test` cover formatting, lint, shell syntax, types, and token-free behavior tests. `task run -- <command>` runs inside the locked environment. `task package` uses `uv build --no-sources` to build the source distribution and wheel in `dist/`; `task build` still builds the Docker image.
 
-`task smoke` builds `beads-hub:test`, starts the checked-in Compose stack under a disposable project name with its own volume, and removes them on exit. It uses synthetic GitHub data with real Beads, Dolt, UI, and MCP processes. It verifies readiness, dependencies, claims, local fields, closure, reopening, renames, HTTP access, a separate remote SQL pointer, and restart persistence. It requires no GitHub token and publishes temporary localhost ports instead of the normal fixed ports. Its cleanup removes only the test project and volume. Do not run `tests/smoke_runtime.py` against a real hub: it intentionally writes its synthetic backlog.
+The package installs three commands: `beads-hub-sync` for one-shot/periodic sync and progress inspection, `beads-hub-mcp` for the official MCP stdio/HTTP/SSE server, and `beads-hub-runtime` for readiness and SQL account setup. From the checkout, run them through uv or the Task wrapper:
+
+```sh
+task run -- beads-hub-sync --help
+uv run --locked beads-hub-sync --status
+```
+
+These commands default to the current repository; `BEADS_WORKING_DIR` can select another initialized workspace. Local sync/MCP requires the matching native `bd` CLI with embedded Dolt support. Docker sets an explicit workspace and SQL connection, installs the package non-editable with runtime dependencies only, then starts the same commands directly. No `PYTHONPATH` configuration is required.
+
+`task smoke` builds `beads-hub:test`, starts the checked-in Compose stack under a disposable project name with its own volume, and removes them on exit. It uses synthetic GitHub data with real Beads, Dolt, UI, and MCP processes. It verifies readiness, dependencies, claims, local fields, closure, reopening, renames, HTTP and stdio MCP access, a separate remote SQL pointer, and restart persistence. It requires no GitHub token and publishes temporary localhost ports instead of the normal fixed ports. Its cleanup removes only the test project and volume. Do not run `tests/smoke_runtime.py` against a real hub: it intentionally writes its synthetic backlog.
+
+## Local embedded deployment
+
+The [local guide](local.md) covers plain `bd init`, repository-local `.beads/embeddeddolt/` storage, uv polling, and a copyable client configuration. `beads-hub-mcp` defaults to stdio. Native `bd` opens the database directly, with no SQL listener or separate Dolt executable. All local processes share one repository workspace, sync lock, and progress file. `task smoke-local` validates embedded behavior, concurrent poller/MCP access, and persistence in a disposable repository using native `bd` and synthetic source records. Compose continues to select HTTP/SSE and its SQL server explicitly. Existing server-mode workspaces retain their configured connection and are not converted by these defaults.
 
 ## Select repositories
 
@@ -36,7 +49,7 @@ The hub starts with a full open-item inventory, then polls changed issues/PRs in
 | Closed/referenced PR no longer blocks an issue | Closed blockers cease blocking through Beads; removed references prune hub-owned edges |
 | Temporary API failure or downtime | Retain the previous snapshot; retry on later polls or after restart |
 
-After bootstrap, all-state deltas can discover an item created and closed entirely between polls. Old closed history predating bootstrap is not imported, and this is not a complete event history. Local Beads closes do not prevent upstream closure verification. A missing or inaccessible source is never proof of closure.
+After bootstrap, all-state deltas can discover an item created and closed entirely between polls. Hourly, rename, and `--full` repairs retain that delta read alongside the full open inventory, so a repair does not skip terminal updates while advancing the checkpoint. Both reads must succeed before writes. Repairs after a long outage may therefore read a larger range of changed closed work. Old closed history predating bootstrap is not imported, and this is not a complete event history. Local Beads closes do not prevent upstream closure verification. A missing or inaccessible source is never proof of closure.
 
 ## Deploy with Docker Compose
 

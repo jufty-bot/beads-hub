@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Wait for Dolt or the initialized hub before starting a dependent service."""
+"""Check a Beads workspace or wait for an external SQL service during Compose startup."""
 
 from __future__ import annotations
 
@@ -46,9 +45,9 @@ def configure_remote_access() -> None:
 
 
 def wait_for_hub(*, sql_only: bool = False, timeout: float = 120) -> None:
-    """Require a live database, failing startup if initialization never completes."""
+    """Check bd access for either backend, or explicitly wait for an external SQL listener."""
     deadline = time.monotonic() + timeout
-    workspace = Path(os.environ.get("BEADS_WORKING_DIR", "/var/lib/beads"))
+    workspace = Path(os.environ.get("BEADS_WORKING_DIR", "."))
     while time.monotonic() < deadline:
         if sql_only:
             try:
@@ -76,7 +75,8 @@ def wait_for_hub(*, sql_only: bool = False, timeout: float = 120) -> None:
     raise TimeoutError("Dolt or hub initialization did not become ready within the startup timeout")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Wait for a runtime dependency or provision database-scoped remote access."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sql", action="store_true", help="Wait only for the SQL listener")
     parser.add_argument(
@@ -87,3 +87,7 @@ if __name__ == "__main__":
         configure_remote_access()
     else:
         wait_for_hub(sql_only=args.sql)
+
+
+if __name__ == "__main__":
+    main()

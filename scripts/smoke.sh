@@ -26,7 +26,7 @@ case "$ui_address" in
 esac
 if ! docker run --rm --network "container:$dolt_id" \
   -v "${stack}_data:/var/lib/beads" -v "$root/tests:/tmp/hub-tests:ro" \
-  -e PYTHONPATH=/usr/local/bin "$image" python3 /tmp/hub-tests/smoke_runtime.py; then
+  "$image" python3 /tmp/hub-tests/smoke_runtime.py; then
   compose logs
   exit 1
 fi
@@ -45,9 +45,9 @@ docker run --rm --network "${stack}_default" -e BEADS_DOLT_SERVER_HOST=dolt \
 
 compose down
 compose up -d --wait --wait-timeout 180
-compose exec -T hub python3 /usr/local/bin/hub_runtime.py
+compose exec -T hub beads-hub-runtime
 compose exec -T hub python3 -c \
   'import json, subprocess; assert len(json.loads(subprocess.check_output(["bd", "list", "--all", "--limit", "0", "--json"], text=True))) == 2'
-compose exec -T github-reconciler env PYTHONPATH=/usr/local/bin python3 -c \
-  'from pathlib import Path; from sync_state import SyncState; state = SyncState(Path("/var/lib/beads/.github-sync-state.json")); assert state.data["repositories"]["R_1"]["name"] == "example/renamed"; assert state.data["repositories"]["R_1"]["checkpoint"] > 0'
+compose exec -T github-reconciler python3 -c \
+  'from pathlib import Path; from beads_hub.state import SyncState; state = SyncState(Path("/var/lib/beads/.github-sync-state.json")); assert state.data["repositories"]["R_1"]["name"] == "example/renamed"; assert state.data["repositories"]["R_1"]["checkpoint"] > 0'
 echo 'Smoke checks passed, including remote pointer and persistent restart.'

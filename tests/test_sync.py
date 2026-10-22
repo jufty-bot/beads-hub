@@ -9,9 +9,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import gh_global_sync as sync
 import pytest
 from fixtures import FixtureGitHub, item, repository
+
+from beads_hub import sync
 
 
 class MemoryBeads(sync.Beads):

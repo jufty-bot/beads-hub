@@ -53,21 +53,28 @@ class SyncState:
             raise ValueError("Invalid GitHub sync timestamp")
         return float(value)
 
-    def since(self, repo: dict[str, Any], *, now: float) -> str | None:
-        """Choose bootstrap/repair or a delta starting before the last committed pass."""
+    def needs_full(self, repo: dict[str, Any], *, now: float) -> bool:
+        """Schedule an open-backlog repair independently of incremental coverage."""
         entry = self.data["repositories"].get(repo["node_id"], {})
         checkpoint = self.timestamp(entry.get("checkpoint", 0))
         last_full = self.timestamp(entry.get("last_full_at", 0))
-        if (
+        return (
             not checkpoint
             or not last_full
             or checkpoint > now
             or last_full > now
             or now - last_full >= FULL_SCAN_SECONDS
             or entry.get("name") != repo["full_name"]
-        ):
+        )
+
+    def since(self, repo: dict[str, Any], *, now: float) -> str | None:
+        """Replay the last committed range during deltas and repairs; rewind on clock rollback."""
+        entry = self.data["repositories"].get(repo["node_id"], {})
+        checkpoint = self.timestamp(entry.get("checkpoint", 0))
+        if not checkpoint:
             return None
-        return datetime.fromtimestamp(max(0, checkpoint - OVERLAP_SECONDS), UTC).isoformat()
+        start = max(0, min(checkpoint, now) - OVERLAP_SECONDS)
+        return datetime.fromtimestamp(start, UTC).isoformat()
 
     def mark_success(
         self, repo: dict[str, Any], *, started: float, finished: float, full: bool

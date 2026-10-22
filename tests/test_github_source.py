@@ -9,14 +9,15 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-import gh_global_sync as sync
 import httpx
 import pytest
 from fixtures import item, repository
-from github_source import GitHub, Json, RateLimited, node_metadata, source_metadata
 from githubkit import GitHub as Client
-from sync_state import SyncState
 from test_sync import MemoryBeads
+
+from beads_hub import sync
+from beads_hub.github import GitHub, Json, RateLimited, node_metadata, source_metadata
+from beads_hub.state import FULL_SCAN_SECONDS, OVERLAP_SECONDS, SyncState
 
 
 def source(handler: Callable[[httpx.Request], httpx.Response], *, workers: int = 1) -> GitHub:
@@ -285,6 +286,119 @@ def test_delta_uses_all_states_and_refreshes_unchanged_pr() -> None:
     assert rows[0]["labels"] == ["help wanted"]
     assert rows[0]["github"]["author"]["login"] == "synthetic-author"
     assert rows[0]["github"]["pull_request"]["review_decision"] == "CHANGES_REQUESTED"
+
+
+@pytest.mark.parametrize("repair", ["hourly", "forced", "rename"])
+@pytest.mark.parametrize("kind", ["issue", "pr"])
+def test_full_repair_preserves_terminal_delta(tmp_path: Path, repair: str, kind: str) -> None:
+    """Repairs import work created and closed since the cursor before advancing coverage."""
+    repo = repository()
+    state = SyncState(tmp_path / "progress.json")
+    started = time.time() - 120
+    state.mark_success(repo, started=started, finished=started + 1, full=True)
+    if repair == "hourly":
+        state.data["repositories"]["R_1"]["last_full_at"] -= FULL_SCAN_SECONDS
+    elif repair == "rename":
+        repo["full_name"] = "example/renamed"
+    terminal = item(kind, number=2, repo=repo)
+    terminal["state"] = "MERGED" if kind == "pr" else "CLOSED"
+    terminal_row = dict(rest_item(number=2), node_id=terminal["id"], state="closed")
+    if kind == "pr":
+        terminal_row["pull_request"] = {}
+    queries: list[str] = []
+
+    def response(request: httpx.Request) -> httpx.Response:
+        """Separate the open inventory from terminal work visible only in the delta."""
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": {"node": terminal}})
+        if request.url.path == "/user/repos":
+            return httpx.Response(200, json=[repo])
+        query = request.url.params["state"]
+        queries.append(query)
+        if query == "all":
+            since = datetime.fromisoformat(request.url.params["since"]).timestamp()
+            assert since == pytest.approx(started - OVERLAP_SECONDS, rel=0, abs=1e-6)
+        return httpx.Response(200, json=[rest_item()] if query == "open" else [terminal_row])
+
+    github, beads = source(response), MemoryBeads()
+    with github.client:
+        result = sync.reconcile(github, beads, "user:@me", state, force_full=repair == "forced")
+    assert result["status"] == "complete" and result["modes"] == {repo["full_name"]: "full"}
+    assert result["closed"] == 1 and len(beads.rows) == 2
+    assert sorted(queries) == ["all", "open"]
+    assert any(
+        row["metadata"]["hub"]["source_state"] == terminal["state"] for row in beads.rows.values()
+    )
+    assert SyncState(state.path).data["repositories"]["R_1"]["checkpoint"] > started
+
+
+@pytest.mark.parametrize("failed_collection", ["open", "all"])
+def test_repair_page_failure_retains_delta_coverage(tmp_path: Path, failed_collection: str) -> None:
+    """Neither repair collection can fail after a page and still advance the saved cursor."""
+    state = SyncState(tmp_path / "progress.json")
+    started = time.time() - 120
+    state.mark_success(repository(), started=started, finished=started + 1, full=True)
+    state.save()
+    fail = True
+
+    def response(request: httpx.Request) -> httpx.Response:
+        """Fail a later page, then allow replay of both open and terminal records."""
+        if request.url.path == "/user/repos":
+            return httpx.Response(200, json=[repository()])
+        collection = request.url.params["state"]
+        if fail and collection == failed_collection:
+            if request.url.params.get("page") == "2":
+                return httpx.Response(503, json={"message": "Synthetic repair outage"})
+            return httpx.Response(
+                200,
+                json=[rest_item()],
+                headers={"Link": f'<{request.url.copy_set_param("page", "2")}>; rel="next"'},
+            )
+        rows = (
+            [rest_item()] if collection == "open" else [dict(rest_item(number=2), state="closed")]
+        )
+        return httpx.Response(200, json=rows)
+
+    github, beads = source(response), MemoryBeads()
+    with github.client:
+        result = sync.reconcile(github, beads, "user:@me", state, force_full=True)
+        assert result["status"] == "partial" and result["writes"] == 0
+        assert not beads.rows
+        saved = SyncState(state.path)
+        assert saved.data["repositories"]["R_1"]["checkpoint"] == started
+        assert saved.data["repositories"]["R_1"]["error"]
+        fail = False
+        result = sync.reconcile(github, beads, "user:@me", saved, force_full=True)
+    assert result["status"] == "complete" and result["closed"] == 1
+    assert len(beads.rows) == 2
+    assert SyncState(state.path).data["repositories"]["R_1"]["checkpoint"] > started
+
+
+def test_repair_deduplicates_prs_before_detail_reads() -> None:
+    """A PR in both collections and the local inventory needs one live signal read."""
+    pr = item("pr")
+    row = dict(rest_item(), node_id=pr["id"], pull_request={})
+    node_reads = 0
+
+    def response(request: httpx.Request) -> httpx.Response:
+        """Return a stale label in the open scan and its newer value in the following delta."""
+        nonlocal node_reads
+        if request.method == "POST":
+            node_reads += 1
+            return httpx.Response(200, json={"data": {"node": pr}})
+        label = "new" if request.url.params["state"] == "all" else "old"
+        return httpx.Response(200, json=[dict(row, labels=[{"name": label}])])
+
+    github = source(response)
+    with github.client:
+        rows = github.items(
+            repository(),
+            since="2026-10-21T12:00:00Z",
+            full=True,
+            prs=[{"metadata": {"hub": {"node_id": pr["id"]}}}],
+        )
+    assert len(rows) == 1 and rows[0]["labels"] == ["new"]
+    assert node_reads == 1
 
 
 def test_threaded_node_reads_are_bounded_and_joined() -> None:

@@ -33,12 +33,18 @@ tasks:
   smoke:
     desc: Build and exercise a disposable Dolt, UI, MCP, and synthetic GitHub stack
     cmds: ['bash scripts/smoke.sh {{.IMAGE}}']
+  smoke-local:
+    desc: Exercise native embedded Dolt, concurrent polling, and stdio in a disposable repository
+    cmds: [uv run --locked python tests/smoke_embedded.py]
   run:
     desc: Run a command in the project environment
     cmds: ['uv run --locked {{.CLI_ARGS}}']
   build:
     desc: Build the unified image locally
     cmds: ['docker build -t {{.IMAGE}} .']
+  package:
+    desc: Build the Python source distribution and wheel with uv
+    cmds: [uv build --no-sources]
   push:
     desc: Push the explicitly selected image
     cmds: ['docker push {{.IMAGE}}']
@@ -58,8 +64,8 @@ tasks:
   sync-now:
     desc: Run one reconciliation in Compose using the shared sync lock
     cmds:
-      - docker compose exec -T github-reconciler python3 /usr/local/bin/gh_global_sync.py {{.CLI_ARGS}}
+      - docker compose exec -T github-reconciler beads-hub-sync {{.CLI_ARGS}}
   sync-status:
     desc: Show per-repository sync checkpoints, successes, failures, and rate cooldown
     cmds:
-      - docker compose exec -T github-reconciler python3 /usr/local/bin/gh_global_sync.py --status
+      - docker compose exec -T github-reconciler beads-hub-sync --status
