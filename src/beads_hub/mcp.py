@@ -22,7 +22,7 @@ def trigger_github_sync() -> dict[str, Any]:
 
 def main() -> None:
     """Wait for initialization and serve the official MCP instance on the configured transport."""
-    transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport not in {"stdio", "streamable-http", "sse"}:
         raise ValueError("MCP_TRANSPORT must be stdio, streamable-http, or sse")
     wait_for_hub()

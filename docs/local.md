@@ -1,22 +1,21 @@
-# Local Dolt and stdio MCP
+# Local embedded Dolt and stdio MCP
 
-Run the shared backlog on your workstation with native Dolt, Beads, and uv. The database and periodic poller run independently; each MCP client starts its own stdio server against that same workspace. Docker and the web UI are optional for this workflow.
+The default local workflow stores the backlog inside a repository under `.beads/embeddeddolt/`. The native `bd` binary opens embedded Dolt directly. The uv poller and each stdio MCP session use that same workspace, with no Docker, SQL listener, separate `dolt` executable, or SQL credentials required.
 
 ```mermaid
 flowchart LR
     GitHub[GitHub] --> Poller[uv: beads-hub-sync]
     Agent[MCP client] -->|stdio| MCP[uv: beads-hub-mcp]
     MCP -->|Sync trigger| Reconcile[Shared reconciliation code]
-    Poller --> BD[bd CLI]
+    Poller --> BD[bd with embedded Dolt]
     Reconcile --> BD
     MCP --> BD
-    BD --> Dolt[Local Dolt SQL]
-    Dolt --> Disk[Dedicated local workspace]
+    BD --> Disk[Repository .beads/embeddeddolt]
 ```
 
 ## Prerequisites
 
-Install Python 3.11+, uv, [Beads 1.3.1](https://github.com/gastownhall/beads/releases/tag/v1.3.1), and [Dolt 2.5.1](https://github.com/dolthub/dolt/releases/tag/v2.5.1). Put `bd` and `dolt` on your shell's `PATH`. These are the versions exercised with the pinned `beads-mcp` package; uv installs Python dependencies, not the native binaries.
+Install Python 3.11+, uv, and [Beads 1.3.1](https://github.com/gastownhall/beads/releases/tag/v1.3.1) with embedded Dolt support. The tested macOS ARM64 release includes it; embedded support requires a CGO-enabled Beads build. Put `bd` on your shell's `PATH`. uv installs the Python dependencies, while the embedded database engine is part of `bd`.
 
 From the beads-hub checkout:
 
@@ -24,71 +23,33 @@ From the beads-hub checkout:
 uv sync --locked
 ```
 
-## 1. Choose one dedicated workspace
+## 1. Initialize the repository once
 
-Use a fresh directory for this backlog. Keep these workspace and SQL settings consistent across terminal sessions and MCP clients:
-
-```sh
-export BEADS_WORKING_DIR="$HOME/.local/share/beads-hub"
-export BEADS_DIR="$BEADS_WORKING_DIR/.beads"
-export BEADS_PATH="$(command -v bd)"
-export BEADS_DOLT_SERVER_MODE=1
-export BEADS_DOLT_SERVER_HOST=127.0.0.1
-export BEADS_DOLT_SERVER_PORT=3307
-export BEADS_DOLT_SERVER_USER=root
-export BEADS_DOLT_AUTO_START=0
-export BEADS_ACTOR=local-maintainer
-```
-
-Pick an unused port. If a Compose stack already publishes `3307`, choose another port here and use it in the server, initialization, and MCP configuration below.
-
-Keep Dolt's configuration inside this workspace as well. `DOLT_ROOT_PATH` redirects its user configuration, so the following identity setup leaves your usual Dolt configuration intact:
+The checkout itself can hold your hub's local backlog:
 
 ```sh
-export DOLT_ROOT_PATH="$BEADS_WORKING_DIR/dolt-config"
-mkdir -p "$BEADS_WORKING_DIR/dolt" "$DOLT_ROOT_PATH"
-dolt config --global --add user.name beads-hub
-dolt config --global --add user.email beads-hub@localhost
-```
-
-The layout is `.beads/` for the connection metadata, `dolt/` for SQL data, and `.github-sync-state.json` for polling progress. Keep Dolt's data outside `.beads/dolt`, which Beads interprets as a legacy workspace.
-
-## 2. Start local Dolt
-
-In a terminal with the settings above, run the server in the foreground:
-
-```sh
-dolt sql-server --data-dir "$BEADS_WORKING_DIR/dolt" \
-  --host "$BEADS_DOLT_SERVER_HOST" --port "$BEADS_DOLT_SERVER_PORT"
-```
-
-This setup uses Dolt's local `root` account on a loopback-only listener. It does not provision remote SQL access or require `BEADS_REMOTE_PASSWORD`. Keep the listener on `127.0.0.1` for this trusted local workflow; the [Compose setup](usage.md#deploy-with-docker-compose) provisions a separate account for remote clients.
-
-## 3. Initialize Beads once
-
-In another terminal with the same workspace/SQL environment, initialize the fresh workspace against the running server:
-
-```sh
-(
-  cd "$BEADS_WORKING_DIR"
-  bd init --server --external \
-    --server-host "$BEADS_DOLT_SERVER_HOST" \
-    --server-port "$BEADS_DOLT_SERVER_PORT" \
-    --server-user "$BEADS_DOLT_SERVER_USER" \
-    --database beads_hub --prefix hub \
-    --non-interactive --skip-agents --skip-hooks
-)
-uv run --locked beads-hub-runtime
+bd init --prefix hub --non-interactive --skip-agents --skip-hooks
 bd info --json
 ```
 
-Run initialization only for the new workspace. Later sessions reuse its metadata and database. The `--external` setting and `BEADS_DOLT_AUTO_START=0` keep Dolt's lifetime independent of individual CLI/MCP sessions.
+Run this in a repository that does not already have a Beads workspace. Plain `bd init` selects embedded mode; leave `--server`, `--external`, and SQL connection settings out. Use a clean environment without `BEADS_DIR` or `BEADS_DOLT_SERVER_*` settings left over from a server setup.
 
-Run uv commands from the checkout, or use `uv --directory /absolute/path/to/beads-hub run --locked ...` from elsewhere. The code checkout and data workspace are separate directories.
+The local layout is:
 
-## 4. Run the GitHub poller
+```text
+your-repository/
+├── .beads/
+│   ├── metadata.json      # Workspace identity and embedded backend configuration
+│   └── embeddeddolt/      # Local Dolt database files
+├── .github-sync-state.json
+└── .github-sync.lock
+```
 
-Inject `GH_TOKEN` securely into this process's environment, then run:
+The beads-hub checkout ignores these paths in Git. When using another repository, add the same paths to its ignore rules. Dolt maintains its own database history; preserve the database files and workspace metadata together for backups.
+
+## 2. Run the GitHub poller
+
+Inject `GH_TOKEN` securely into the poller's environment, then run from the initialized repository root:
 
 ```sh
 : "${GH_TOKEN:?Inject a GitHub read credential}"
@@ -96,9 +57,9 @@ export GH_SYNC_QUERY='user:@me'
 uv run --locked beads-hub-sync --loop --interval 120
 ```
 
-Keep one poller running while you want automatic updates. The native CLI uses `--interval` for its pause; `GH_SYNC_INTERVAL` configures the Compose command. Repository scopes, incremental checkpoints, PR evidence refresh, rate cooldowns, and local-field ownership are identical in both deployments.
+Keep one poller running while you want automatic updates. The CLI defaults to the current repository for database access, sync locking, and progress. Use `--interval` for the native pause; `GH_SYNC_INTERVAL` configures the Compose command. Repository scopes, incremental reads, PR evidence refresh, and local-field ownership are the same in both deployments.
 
-From another terminal with the same workspace/SQL environment:
+From another terminal in that repository:
 
 ```sh
 uv run --locked beads-hub-sync --status
@@ -106,11 +67,17 @@ uv run --locked beads-hub-sync --full
 bd ready --label 'type:pr' --json
 ```
 
-One-shot sync requires `GH_TOKEN`; progress inspection and reading existing Beads work do not. Native processes must share the same workspace path so polling, manual sync, and MCP triggers use the same lock and progress file.
+One-shot source sync requires `GH_TOKEN`; progress inspection and reading existing work do not. For a repository other than the code checkout, select the installed project without changing the working directory:
 
-## 5. Connect a stdio MCP client
+```sh
+uv run --project /absolute/path/to/beads-hub --locked beads-hub-sync --status
+```
 
-Configure your client to launch the installed wrapper through uv. Replace every `/absolute/path/...` value with an actual absolute path; MCP environment values do not automatically expand `$HOME` or `~`.
+Alternatively, set `BEADS_WORKING_DIR` to the absolute path of the initialized repository. Use the same workspace for every poller, CLI call, and MCP session so they share the lock and checkpoints. A shared hub can still import work from many GitHub repositories into this one local database.
+
+## 3. Connect a stdio MCP client
+
+Configure your client to launch the wrapper through uv. `BEADS_WORKING_DIR` points to the repository holding the database, which may be different from the code checkout selected by `--project`:
 
 ```json
 {
@@ -118,19 +85,12 @@ Configure your client to launch the installed wrapper through uv. Replace every 
     "beads": {
       "command": "uv",
       "args": [
-        "--directory", "/absolute/path/to/beads-hub",
-        "run", "--locked", "beads-hub-mcp"
+        "run", "--project", "/absolute/path/to/beads-hub",
+        "--locked", "beads-hub-mcp"
       ],
       "env": {
-        "MCP_TRANSPORT": "stdio",
+        "BEADS_WORKING_DIR": "/absolute/path/to/your-repository",
         "BEADS_PATH": "/absolute/path/to/bd",
-        "BEADS_WORKING_DIR": "/absolute/path/to/workspace",
-        "BEADS_DIR": "/absolute/path/to/workspace/.beads",
-        "BEADS_DOLT_SERVER_MODE": "1",
-        "BEADS_DOLT_SERVER_HOST": "127.0.0.1",
-        "BEADS_DOLT_SERVER_PORT": "3307",
-        "BEADS_DOLT_SERVER_USER": "root",
-        "BEADS_DOLT_AUTO_START": "0",
         "BEADS_ACTOR": "local-agent",
         "GH_SYNC_QUERY": "user:@me"
       }
@@ -139,28 +99,30 @@ Configure your client to launch the installed wrapper through uv. Replace every 
 }
 ```
 
-Use an absolute path for `command` as well if your client cannot find uv. To enable `trigger_github_sync`, inject `GH_TOKEN` through the client's secret/environment facility. Without it, the normal Beads tools still read and manage the local backlog, and the trigger reports an authentication error. Match the trigger's `GH_SYNC_QUERY` to the poller's scopes. Polling continues independently of whether an MCP client is open.
-
-`MCP_TRANSPORT=stdio` uses stdin/stdout for MCP messages and starts no HTTP listener. HTTP bind settings are ignored. Startup waits for the initialized hub; the server retains the official tools, `beads://quickstart`, and the synchronous sync trigger. Runtime logs stay on stderr.
-
-For a terminal launch after setting the same environment:
+Replace all example paths with actual absolute paths; client environment values do not automatically expand `$HOME` or `~`. Use an absolute `command` path if the client cannot find uv. Stdio is the wrapper's default transport; `MCP_TRANSPORT=stdio` can also select it explicitly. The normal terminal command is:
 
 ```sh
-MCP_TRANSPORT=stdio uv run --locked beads-hub-mcp
+uv run --locked beads-hub-mcp
 ```
 
-That command waits for an MCP client speaking the stdio protocol. It is not an interactive chat prompt. Prefer the client configuration above for normal use.
+The command expects an MCP client on stdin/stdout. It starts no HTTP listener, and runtime logs use stderr. Startup checks database access through `bd info`, which works with either embedded or server-backed workspaces. The official tools, `beads://quickstart`, and synchronous `trigger_github_sync` tool remain available.
 
-## Shutdown and restart
+To enable the trigger, inject `GH_TOKEN` through the client's secret/environment facility and match `GH_SYNC_QUERY` to the poller. Without a token, ordinary Beads tools still work and the trigger reports an authentication error. Polling runs independently of whether an MCP client is open.
 
-Stop the poller with Ctrl-C, close MCP sessions through their client, then stop Dolt with Ctrl-C. Start Dolt again against the same data directory, restart the poller, and reconnect clients. No reinitialization is needed; Beads work and polling progress remain on disk. Use your OS process manager if you want Dolt and polling to survive terminal closure.
+## Concurrency, shutdown, and persistence
 
-## Stdio with a Compose-hosted database
+Each `bd` process opens the embedded database for its operation. The pinned Beads driver coordinates database access; the hub's filesystem lock separately serializes reconciliation passes. MCP reads and ordinary Beads CLI edits can run while the poller updates source snapshots. A simultaneous sync trigger returns `busy` when the poller owns the lock.
 
-A host-side stdio client can also use the existing Compose database. Initialize the dedicated remote pointer described in [AGENTS.md](../AGENTS.md#shell-agents), then use that pointer's absolute workspace/Beads paths and SQL connection environment in the configuration above. Set the SQL user to `beads` and securely inject `BEADS_DOLT_PASSWORD` for the database-scoped account.
+Stop the poller with Ctrl-C and close stdio sessions through their MCP client. Later, restart polling and reconnect clients in the same repository. There is no database server process to restart and no reinitialization is needed. Work items and polling progress remain on disk.
 
-The official `beads-mcp` stdio command supports ordinary Beads access to that pointer. The hub wrapper also exposes a sync trigger, but a host pointer has its own lock/progress files: use `task sync-now` or the Compose HTTP MCP trigger to reconcile the Compose workspace. Run only the Compose poller for that database.
+## Existing server workspaces and Compose
+
+Existing server-mode metadata keeps using its configured SQL server. The local default change does not convert or move that database. Keep the existing connection settings for those workspaces; use a fresh repository for the embedded workflow until choosing an explicit data migration.
+
+For centralized access, the [Compose deployment](usage.md#deploy-with-docker-compose) still runs one shared Dolt SQL server and HTTP/SSE MCP. A host-side stdio client can connect through the dedicated remote pointer in [AGENTS.md](../AGENTS.md#compose-sql-clients). Such a pointer has its own lock/progress files, so run source reconciliation inside Compose through `task sync-now` or its HTTP MCP trigger.
 
 ## Validation
 
-Offline tests spawn the installed stdio server and discover tools/resources and the sync trigger. The full `task smoke` workflow also exercises stdio against real Dolt/Beads alongside the HTTP checks. A native ARM64 macOS check exercised the pinned binaries, fresh-workspace initialization, real stdio tools/resource/trigger, and database restart persistence with synthetic data. It did not contact GitHub.
+`task smoke-local` uses native `bd` to initialize an isolated temporary Git repository. It exercises real embedded writes, dependencies, no-op reconciliation, overlapping poller writes and stdio MCP reads, shared trigger locking, and persistence across new client processes. It uses synthetic GitHub data and requires neither Docker nor a GitHub credential. Set `BEADS_PATH` if the tested native binary is not on `PATH`.
+
+The offline suite covers current-repository defaults and installed stdio startup with and without explicit environment settings. `task smoke` separately verifies the Compose SQL/HTTP/stdio workflow. Native embedded validation currently covers ARM64 macOS with the pinned Beads release; other native platforms and credentialed GitHub behavior remain unverified.

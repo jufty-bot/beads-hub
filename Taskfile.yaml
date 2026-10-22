@@ -33,6 +33,9 @@ tasks:
   smoke:
     desc: Build and exercise a disposable Dolt, UI, MCP, and synthetic GitHub stack
     cmds: ['bash scripts/smoke.sh {{.IMAGE}}']
+  smoke-local:
+    desc: Exercise native embedded Dolt, concurrent polling, and stdio in a disposable repository
+    cmds: [uv run --locked python tests/smoke_embedded.py]
   run:
     desc: Run a command in the project environment
     cmds: ['uv run --locked {{.CLI_ARGS}}']

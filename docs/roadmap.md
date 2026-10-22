@@ -13,10 +13,10 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | Source and local triage separation | Implemented | Classification is supplied by humans/agents |
 | PR signal triage and closing dependencies | Implemented | Latest signals, indexed closing targets, GitHub's recognized references |
 | Shared CLI, UI, official MCP | Implemented | Trusted clients; one database |
-| Native Dolt and stdio MCP | Implemented with the existing uv package and explicit local workspace/SQL settings | Independent database/poller processes; per-client stdio retains official tools and sync trigger; native ARM64 bootstrap/stdio/restart verified |
+| Local embedded Dolt and stdio MCP | Implemented as the local default with repository-local storage and no SQL listener | Current-directory or explicit workspace; native ARM64 initialization, concurrent poller/MCP access, shared locking, and persistence verified with `task smoke-local` |
 | Python source package and uv workflows | Implemented in `src/beads_hub` with the uv build backend and installed sync/MCP/runtime commands | Locked editable development install, non-editable Docker install, source distribution and wheel via `task package` |
 | Unified image and Docker Compose deployment | Implemented | Four services, one persistent volume, localhost ports; operator supplies runtime credentials |
-| Runtime and regression validation | 93 offline tests, installed CLI and stdio subprocess checks, source/wheel builds, operation-count and repair-coverage regressions, native ARM64 Dolt/stdio/restart validation, and Compose smoke coverage | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
+| Runtime and regression validation | 96 offline tests, installed CLI and stdio default checks, source/wheel builds, operation-count and repair-coverage regressions, native ARM64 embedded Dolt concurrency/persistence validation, and Compose smoke coverage | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
 | Live multi-repository pilot | Pending | Needs an authorized GitHub credential and Docker host |
 | Backup/restore exercise | Pending | Requires storage/backup selection and a disposable restore target |
 

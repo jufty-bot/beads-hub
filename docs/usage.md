@@ -11,13 +11,13 @@ task run -- beads-hub-sync --help
 uv run --locked beads-hub-sync --status
 ```
 
-These commands use the existing workspace and runtime environment variables; running sync or MCP locally requires an initialized hub and matching `bd` CLI. Docker installs the package non-editable with runtime dependencies only, then starts the same commands directly. No `PYTHONPATH` configuration is required.
+These commands default to the current repository; `BEADS_WORKING_DIR` can select another initialized workspace. Local sync/MCP requires the matching native `bd` CLI with embedded Dolt support. Docker sets an explicit workspace and SQL connection, installs the package non-editable with runtime dependencies only, then starts the same commands directly. No `PYTHONPATH` configuration is required.
 
 `task smoke` builds `beads-hub:test`, starts the checked-in Compose stack under a disposable project name with its own volume, and removes them on exit. It uses synthetic GitHub data with real Beads, Dolt, UI, and MCP processes. It verifies readiness, dependencies, claims, local fields, closure, reopening, renames, HTTP and stdio MCP access, a separate remote SQL pointer, and restart persistence. It requires no GitHub token and publishes temporary localhost ports instead of the normal fixed ports. Its cleanup removes only the test project and volume. Do not run `tests/smoke_runtime.py` against a real hub: it intentionally writes its synthetic backlog.
 
-## Native local deployment
+## Local embedded deployment
 
-The [local Dolt and stdio guide](local.md) covers native binaries, a dedicated workspace, one-time Beads initialization, uv polling, and a copyable client configuration. Set `MCP_TRANSPORT=stdio` when a local MCP client launches `beads-hub-mcp`; Dolt and the poller stay independent. All native processes share the same workspace/SQL environment and progress lock. Compose continues to use HTTP/SSE for its persistent MCP service and network health check.
+The [local guide](local.md) covers plain `bd init`, repository-local `.beads/embeddeddolt/` storage, uv polling, and a copyable client configuration. `beads-hub-mcp` defaults to stdio. Native `bd` opens the database directly, with no SQL listener or separate Dolt executable. All local processes share one repository workspace, sync lock, and progress file. `task smoke-local` validates embedded behavior, concurrent poller/MCP access, and persistence in a disposable repository using native `bd` and synthetic source records. Compose continues to select HTTP/SSE and its SQL server explicitly. Existing server-mode workspaces retain their configured connection and are not converted by these defaults.
 
 ## Select repositories
 

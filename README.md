@@ -12,6 +12,7 @@ GitHub supplies source facts; Beads stores local triage and workflow decisions. 
 - [How synchronization works](#how-synchronization-works)
 - [Quick start](#quick-start)
 - [Local Dolt and stdio](#local-dolt-and-stdio)
+- [Docker Compose deployment](#docker-compose-deployment)
 - [Configuration](#configuration)
 - [Triage and agent access](#triage-and-agent-access)
 - [Operations and troubleshooting](#operations-and-troubleshooting)
@@ -31,7 +32,7 @@ For example, an issue and its proposed fix can both appear in the backlog. If Gi
 
 ## Architecture
 
-Beads provides the task and dependency layer; Dolt provides its SQL storage. CLI, UI, and MCP clients all work with the same backlog. One Docker Compose stack runs four services against one persistent workspace and one Dolt SQL server:
+Beads provides the task and dependency layer; Dolt provides its SQL storage. Native local mode opens an embedded database inside the repository. The optional Docker Compose deployment shares one SQL server across CLI, UI, and network MCP clients. The diagram below shows that centralized deployment:
 
 ```mermaid
 flowchart LR
@@ -145,22 +146,47 @@ Bootstrap excludes old closed history. After bootstrap, all-state deltas can dis
 
 ## Quick start
 
-Deployment needs Git, Docker Engine with the Compose plugin, and [Task](https://taskfile.dev/). Local Python development additionally needs Python 3.11+ and uv. Docker supplies the runtime tools, including the pinned Beads, Dolt, and UI releases.
+The default local setup needs Python 3.11+, uv, and native Beads `bd` 1.3.1 with embedded Dolt support. Its database lives inside the repository. The embedded engine ships with `bd`; a separate Dolt executable or SQL server is not required.
 
 ```sh
 git clone https://github.com/jufty-bot/beads-hub.git
 cd beads-hub
+uv sync --locked
+bd init --prefix hub --non-interactive --skip-agents --skip-hooks
 
-# Inject these securely through your shell or password manager first.
+# Inject a GitHub read credential securely before starting the poller.
+: "${GH_TOKEN:?Inject a GitHub read credential}"
+export GH_SYNC_QUERY='user:@me'
+uv run --locked beads-hub-sync --loop --interval 120
+```
+
+Use a fresh Beads workspace for initialization. The credential needs read access to selected repositories and their issues, PRs, checks, and commit statuses, including private/organization access where needed. Sync authenticates directly through GitHubKit; GitHub CLI login is not used. Keep credentials out of committed files and command history.
+
+From another terminal in the initialized repository, inspect progress with `uv run --locked beads-hub-sync --status`. Configure an MCP client to launch `uv run --locked beads-hub-mcp`, which defaults to stdio. The [local guide](docs/local.md) includes a copyable client configuration and instructions for keeping code and data in separate repositories.
+
+## Local Dolt and stdio
+
+Native `bd` opens `.beads/embeddeddolt/` directly for each operation. The Python commands default to the current repository; `BEADS_WORKING_DIR` can select another initialized workspace. All pollers and clients use the same workspace so they share sync locking and checkpoints.
+
+| Component | Lifetime |
+| --- | --- |
+| `.beads/embeddeddolt/` | Persistent local SQL database, opened directly by `bd` |
+| `uv run --locked beads-hub-sync --loop --interval 120` | One background poller while automatic GitHub updates are wanted |
+| `uv run --locked beads-hub-mcp` | Stdio session started and stopped by each MCP client |
+
+The database stays on disk when both processes exit. Closing a client leaves polling independent, and reopening a client requires no database initialization. The stdio wrapper retains the official Beads tools and the hub's sync trigger. See [local setup and client configuration](docs/local.md#3-connect-a-stdio-mcp-client) for details. Existing SQL-server workspaces retain their configured backend; this default change does not migrate their data.
+
+## Docker Compose deployment
+
+For centralized access through UI, HTTP MCP, and remote SQL clients, use the four-service Compose stack. It needs Git, Docker Engine with the Compose plugin, and [Task](https://taskfile.dev/); Docker supplies its runtime tools. From the checkout, securely inject both credentials before starting:
+
+```sh
 : "${GH_TOKEN:?Inject a GitHub read credential}"
 : "${BEADS_REMOTE_PASSWORD:?Inject the remote SQL account password}"
-
 export GH_SYNC_QUERY='user:@me'
 task validate
 task deploy
 ```
-
-The credential needs read access to selected repositories and their issues, pull requests, checks, and commit statuses, including any private-repository or organization authorization. Sync authenticates directly through GitHubKit; GitHub CLI login is not used. Keep credentials out of committed files and command history.
 
 `task deploy` builds the unified image locally and waits for healthy services. The direct equivalent is `docker compose up -d --build --wait --wait-timeout 180`. No image registry is required.
 
@@ -172,20 +198,6 @@ The credential needs read access to selected repositories and their issues, pull
 
 Check the initial import with `task sync-status` and `docker compose logs --tail=20 github-reconciler`. A healthy database does not establish GitHub freshness.
 
-## Local Dolt and stdio
-
-The core backlog also runs natively with Python/uv, `bd`, and a local Dolt server. Use a dedicated workspace, keep Dolt and the GitHub poller running independently, and let each MCP client launch `beads-hub-mcp` with `MCP_TRANSPORT=stdio`. No Docker or HTTP listener is needed for this mode.
-
-After the [local setup](docs/local.md), the long-running processes are:
-
-| Process | Lifetime |
-| --- | --- |
-| `dolt sql-server` on `127.0.0.1` | Owns the local database; started separately |
-| `uv run --locked beads-hub-sync --loop --interval 120` | Keeps GitHub changes flowing into that database |
-| `MCP_TRANSPORT=stdio uv run --locked beads-hub-mcp` | Started and stopped by each MCP client |
-
-All processes share the same workspace and SQL settings, including the sync lock and checkpoints. Closing an MCP client does not stop Dolt or polling. The stdio wrapper retains the official Beads tools and the hub's sync trigger. See the [native bootstrap and copyable MCP configuration](docs/local.md#5-connect-a-stdio-mcp-client), including how to use stdio against a Compose-hosted database.
-
 ## Configuration
 
 Inject configuration into the environment used by Compose. Its default project is `beads-hub`, with persistent data in `beads-hub_data`.
@@ -193,12 +205,13 @@ Inject configuration into the environment used by Compose. Its default project i
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GH_TOKEN` | Empty | GitHub read credential; required for sync, optional for offline UI/MCP use |
-| `BEADS_REMOTE_PASSWORD` | Required | Nonempty password for the database-scoped remote SQL user `beads` |
+| `BEADS_REMOTE_PASSWORD` | Required in Compose | Nonempty password for the database-scoped remote SQL user `beads` |
 | `GH_SYNC_QUERY` | `user:@me` | Semicolon-separated repository inventory scopes |
 | `GH_SYNC_INTERVAL` | `120` | Positive pause in seconds after each automatic pass |
 | `GH_SYNC_WORKERS` | `1` | Independent GitHub node-read workers, from 1 to 4 |
 | `BEADS_UI_PORT` / `BEADS_MCP_PORT` / `BEADS_SQL_PORT` | `3000` / `8080` / `3307` | Host ports; container ports remain fixed |
-| `MCP_TRANSPORT` | `streamable-http` | Native clients can use `stdio`; use `sse` for legacy `/sse`. Compose's MCP service and health check use a network transport |
+| `MCP_TRANSPORT` | `stdio` locally; `streamable-http` in Compose | MCP client transport; use `sse` for legacy `/sse` |
+| `BEADS_WORKING_DIR` | Current directory locally; `/var/lib/beads` in Docker | Initialized repository holding the database, lock, and progress |
 | `IMAGE` | `beads-hub:test` | Shared image tag; with Task, select it using `IMAGE=...` as a task variable |
 
 Supported scopes are inventory selectors, rather than arbitrary search queries:
@@ -218,7 +231,7 @@ The SQL password must remain available when loading Compose configuration for op
 
 ### Beads CLI
 
-For shell-capable agents, use the matching `bd` CLI (currently `1.3.1`). Create a dedicated local pointer workspace connected to the hub's SQL server using the [agent setup guide](AGENTS.md#shell-agents). Then filter and triage through Beads:
+For shell-capable agents, use the matching `bd` CLI (currently `1.3.1`) from the initialized local repository. For centralized SQL access, create the [Compose pointer workspace](AGENTS.md#compose-sql-clients). Then filter and triage through Beads:
 
 ```sh
 bd ready --label 'repo:example/orbit' --json
@@ -237,7 +250,7 @@ Priority and categories are local choices. Repository labels provide grouping; `
 
 ### MCP
 
-Connect an MCP client to the running server:
+For the local default, use the [stdio client configuration](docs/local.md#3-connect-a-stdio-mcp-client). For Compose, connect to the running HTTP server:
 
 ```json
 {
@@ -252,6 +265,8 @@ Connect an MCP client to the running server:
 The official server provides tools such as `ready`, `list`, `show`, `create`, `claim`, `update`, `close`, `reopen`, `dep`, and comments, plus `beads://quickstart`. Use its tool discovery for exact schemas. The added `trigger_github_sync` tool runs a synchronous reconciliation under the same lock as the worker and returns `complete`, `partial`, or `busy`. See [agent connections](AGENTS.md#mcp-agents) for stdio and context-routing details.
 
 ## Operations and troubleshooting
+
+For the local workspace, use `uv run --locked beads-hub-sync --status` and `uv run --locked beads-hub-sync --full`. The Task commands below operate the Compose deployment:
 
 ```sh
 task sync-now
@@ -314,7 +329,8 @@ task lint       # Formatting, lint, and shell syntax checks
 task check      # Strict Python types
 task test       # Token-free behavior tests
 task package    # uv source distribution and wheel in dist/
-task smoke      # Build and exercise a disposable Compose stack
+task smoke-local  # Native bd: disposable embedded database and concurrent stdio/polling
+task smoke        # Build and exercise a disposable Compose stack
 
 task run -- beads-hub-sync --help
 uv run --locked beads-hub-sync --status
@@ -326,7 +342,7 @@ The smoke workflow uses synthetic GitHub records with real Beads, Dolt, UI, and 
 
 ## Current scope and validation
 
-The current implementation has 93 passing offline tests, source/wheel build validation, native ARM64 macOS Dolt/stdio/restart validation, and an ARM64 Compose smoke pass covering installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 build, full browser interaction suite, and backup/restore exercise remain unverified.
+The current implementation has 96 passing offline tests, source/wheel build validation, native ARM64 macOS embedded Dolt/concurrent polling/stdio/persistence validation, and an ARM64 Compose smoke pass covering installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 build, full browser interaction suite, and backup/restore exercise remain unverified.
 
 Current boundaries include polling rather than webhooks, one shared backlog rather than tenant isolation or HA, selected source snapshots rather than complete conversations/diffs/history, and human/agent categorization rather than automatic classification. There is no GitHub write-back, automatic freshness alerting, or migration from the earlier SQLite application.
 

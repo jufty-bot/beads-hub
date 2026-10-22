@@ -66,7 +66,8 @@ def test_transport_settings(monkeypatch: pytest.MonkeyPatch, transport: str) -> 
     assert calls == [expected]
 
 
-def test_stdio_client_process(tmp_path: Path) -> None:
+@pytest.mark.parametrize("explicit", [False, True])
+def test_stdio_client_process(tmp_path: Path, explicit: bool) -> None:
     """A spawned installed server speaks MCP over stdio without credentials or an HTTP listener."""
     beads_dir = tmp_path / ".beads"
     beads_dir.mkdir()
@@ -74,19 +75,19 @@ def test_stdio_client_process(tmp_path: Path) -> None:
     fake_bd = tmp_path / "bd"
     fake_bd.write_text("#!/bin/sh\nprintf '{\"ready\":true}\\n'\n")
     fake_bd.chmod(0o755)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"BEADS_WORKING_DIR", "BEADS_DIR", "MCP_TRANSPORT"}
+    }
+    env.update(BEADS_PATH=str(fake_bd), MCP_PORT="unused", GH_TOKEN="")
+    if explicit:
+        env.update(BEADS_WORKING_DIR=str(tmp_path), BEADS_DIR=str(beads_dir), MCP_TRANSPORT="stdio")
     transport = StdioTransport(
         command="beads-hub-mcp",
         args=[],
         cwd=str(tmp_path),
-        env={
-            **os.environ,
-            "BEADS_PATH": str(fake_bd),
-            "BEADS_WORKING_DIR": str(tmp_path),
-            "BEADS_DIR": str(beads_dir),
-            "MCP_TRANSPORT": "stdio",
-            "MCP_PORT": "unused",
-            "GH_TOKEN": "",
-        },
+        env=env,
     )
 
     async def inspect_stdio() -> None:

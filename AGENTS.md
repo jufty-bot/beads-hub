@@ -10,6 +10,10 @@ Never read secret files or embed credentials in code, tests, output, or manifest
 
 Prefer `bd` when a shell is available. Use the same CLI version as the hub (`1.3.1`). The [upstream MCP guide](https://github.com/gastownhall/beads/blob/v1.3.1/integrations/beads-mcp/README.md) recommends CLI workflows for shell agents; schema and token costs depend on the host's tool discovery behavior.
 
+For the local default, initialize a fresh repository with plain `bd init --prefix hub --non-interactive --skip-agents --skip-hooks`. Beads opens `.beads/embeddeddolt/` directly; no SQL server or SQL connection environment is needed. The uv commands use the current repository unless `BEADS_WORKING_DIR` selects another initialized workspace. Follow the [local guide](docs/local.md), and use `task smoke-local` to validate native embedded behavior in a disposable repository.
+
+### Compose SQL clients
+
 Start the Compose stack with `task deploy`; its SQL port is published on localhost. Create a dedicated pointer workspace once, with the hub's explicit database name:
 
 ```sh
@@ -51,7 +55,7 @@ Dependencies drive readiness; a blocked issue may still have stored `status=open
 
 ## MCP agents
 
-For native local Dolt and a client-spawned stdio server, follow the [local setup](docs/local.md). Set `MCP_TRANSPORT=stdio` for `beads-hub-mcp` and provide the same workspace and SQL environment as the local poller. Dolt and polling run independently of MCP sessions; the wrapper retains the official tools and hub sync trigger.
+For local embedded Dolt and a client-spawned stdio server, follow the [local setup](docs/local.md). `beads-hub-mcp` defaults to stdio and opens the same repository workspace as the local poller. Database files remain in `.beads/embeddeddolt/` between sessions; the wrapper retains the official tools and hub sync trigger. Compose explicitly selects HTTP/SSE and its shared SQL connection.
 
 With the Compose stack running, connect to the official server over Streamable HTTP:
 

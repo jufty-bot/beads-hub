@@ -447,8 +447,8 @@ def reconcile(
 
 
 def run_sync(*, force_full: bool = False) -> Json:
-    """Serialize triggers and persist progress/rate cooldowns across container restarts."""
-    workspace = Path(os.environ.get("BEADS_WORKING_DIR", "/var/lib/beads"))
+    """Serialize triggers and persist progress/rate cooldowns in the selected workspace."""
+    workspace = Path(os.environ.get("BEADS_WORKING_DIR", "."))
     if not (workspace / ".beads/metadata.json").is_file():
         return {"status": "partial", "errors": ["Hub is not initialized"]}
     with (workspace / ".github-sync.lock").open("w") as lock:
@@ -499,7 +499,7 @@ def main() -> None:
     if args.interval < 1:
         parser.error("--interval must be positive")
     if args.status:
-        workspace = Path(os.environ.get("BEADS_WORKING_DIR", "/var/lib/beads"))
+        workspace = Path(os.environ.get("BEADS_WORKING_DIR", "."))
         print(json.dumps(SyncState(workspace / ".github-sync-state.json").data))
         return
     while True:
