@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fixtures import item, repository
+from fixtures import FixtureGitHub, item, repository
 from githubkit import GitHub as Client
 from test_sync import MemoryBeads
 
@@ -94,6 +94,47 @@ def test_inventory_scopes_deduplicate_and_exclude_archives() -> None:
     github = source(response)
     with github.client:
         assert github.repositories("user:@me;org:example;repo:example/orbit") == [active]
+
+
+@pytest.mark.parametrize("names", [["example/other"], ["example/other", "example/third"]])
+def test_selected_sync_replaces_scopes_and_retains_unselected_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    names: list[str],
+) -> None:
+    """Explicit selection reads only named repositories and retains other snapshots/cursors."""
+    beads = MemoryBeads()
+    state = SyncState(tmp_path / ".github-sync-state.json")
+    sync.reconcile(FixtureGitHub([item()]), beads, "user:@me", state)
+    previous_rows = json.loads(json.dumps(beads.rows))
+    previous_progress = dict(state.data["repositories"]["R_1"])
+    requested: list[str] = []
+
+    def response(request: httpx.Request) -> httpx.Response:
+        """Reject broad discovery and source reads for the unselected repository."""
+        path = request.url.path
+        requested.append(path)
+        for number, name in enumerate(names, start=2):
+            if path == f"/repos/{name}":
+                return httpx.Response(200, json=repository(name, f"R_{number}"))
+            if path == f"/repos/{name}/issues":
+                return httpx.Response(200, json=[])
+        raise AssertionError(path)
+
+    github = source(response)
+    (tmp_path / ".beads").mkdir()
+    (tmp_path / ".beads/metadata.json").write_text("{}")
+    monkeypatch.setenv("BEADS_WORKING_DIR", str(tmp_path))
+    monkeypatch.setenv("GH_SYNC_QUERY", "user:@me;org:example")
+    monkeypatch.setattr(sync, "GitHub", lambda **kwargs: github)
+    monkeypatch.setattr(sync, "Beads", lambda: beads)
+    result = sync.run_sync(repositories=names, force_full=True)
+    assert result["status"] == "complete" and set(result["modes"]) == set(names)
+    assert set(requested) == {
+        path for name in names for path in (f"/repos/{name}", f"/repos/{name}/issues")
+    }
+    assert all(beads.rows[key] == value for key, value in previous_rows.items())
+    assert SyncState(state.path).data["repositories"]["R_1"] == previous_progress
 
 
 @pytest.mark.parametrize("scope", ["", "user:@me is:open", "org:foo/bar", "repo:foo"])
@@ -324,10 +365,11 @@ def test_full_repair_preserves_terminal_delta(tmp_path: Path, repair: str, kind:
     with github.client:
         result = sync.reconcile(github, beads, "user:@me", state, force_full=repair == "forced")
     assert result["status"] == "complete" and result["modes"] == {repo["full_name"]: "full"}
-    assert result["closed"] == 1 and len(beads.rows) == 2
+    assert result["closed"] == 1 and len(beads.rows) == 3
     assert sorted(queries) == ["all", "open"]
     assert any(
-        row["metadata"]["hub"]["source_state"] == terminal["state"] for row in beads.rows.values()
+        row["metadata"]["hub"].get("source_state") == terminal["state"]
+        for row in beads.rows.values()
     )
     assert SyncState(state.path).data["repositories"]["R_1"]["checkpoint"] > started
 
@@ -370,7 +412,7 @@ def test_repair_page_failure_retains_delta_coverage(tmp_path: Path, failed_colle
         fail = False
         result = sync.reconcile(github, beads, "user:@me", saved, force_full=True)
     assert result["status"] == "complete" and result["closed"] == 1
-    assert len(beads.rows) == 2
+    assert len(beads.rows) == 3
     assert SyncState(state.path).data["repositories"]["R_1"]["checkpoint"] > started
 
 

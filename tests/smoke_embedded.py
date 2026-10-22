@@ -52,7 +52,9 @@ async def check_clients(source: FixtureGitHub, beads: Beads) -> None:
             assert not result.is_error
     rows = beads.items()
     issue = next(row for row in rows if row["id"] == issue_id)
-    assert len(rows) == 2 and issue["title"].endswith("Synthetic revision 1")
+    assert len(rows) == 3 and issue["title"].endswith("Synthetic revision 1")
+    epic = next(row for row in rows if row["metadata"]["hub"]["kind"] == "repository")
+    assert epic["issue_type"] == "epic" and issue["parent"] == epic["id"]
     assert issue["priority"] == 1 and issue["notes"] == "Synthetic local reasoning"
     assert len(beads.call("dep", "list", issue_id, "--type", "blocks")) == 1
     assert run_sync()["writes"] == 0

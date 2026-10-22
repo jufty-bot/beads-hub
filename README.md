@@ -76,14 +76,17 @@ Work items live in Dolt; the JSON file stores polling progress. There is no sepa
 
 ### Identity and repository grouping
 
-Every imported record starts as a Beads `task`, distinguished by labels and an external reference:
+Each repository gets a Beads `epic` titled `OWNER/REPO`. Its imported issues and PRs start as `task` children, distinguished by labels and an external reference:
 
 | GitHub source | External reference | Example labels |
 | --- | --- | --- |
+| Repository | `gh:OWNER/REPO#repository` | `repo:OWNER/REPO`, `type:repository` |
 | Issue | `gh:OWNER/REPO#issue:NUMBER` | `repo:OWNER/REPO`, `type:issue` |
 | Pull request | `gh:OWNER/REPO#pr:NUMBER` | `repo:OWNER/REPO`, `type:pr`, `ci:failing` |
 
 Stable GitHub node IDs are recorded in `metadata.hub`, alongside repository identity, source kind, number, state, and managed dependencies. Repository renames refresh the readable reference and repository label while retaining the Beads identity.
+
+Existing imports gain their repository parent on the next successful sync, including closed items absent from a delta. Sync maintains epic type and child parenting. Epic status and local planning fields remain local; empty or excluded repositories are not automatically closed.
 
 GitHub labels use the `github:` namespace and percent-encoded names: `bug` becomes `github:bug`, and `help wanted` becomes `github:help%20wanted`. Local classifications use other labels, such as `category:documentation` or `category:dependency-upgrade`.
 
@@ -94,7 +97,8 @@ GitHub labels use the `github:` namespace and percent-encoded names: `bug` becom
 | Title, description, source link | Refreshed from GitHub; descriptions include a source summary and body |
 | Repository, source labels, PR signals | Sync-owned `repo:`, `type:`, `github:`, `ci:`, `conflict:`, `review:`, and `draft:` labels |
 | GitHub metadata | Refreshed under `metadata.hub.github` |
-| Priority, Beads assignee, notes, comments, local labels and issue type | Local workflow; retained by sync |
+| Priority, Beads assignee, notes, comments, local labels and issue/PR type | Local workflow; retained by sync |
+| Repository epic type and imported issue/PR parent | Maintained by sync |
 | Status | Automatically selected while still sync-managed; claims and manual overrides are preserved |
 | Upstream closure | Explicit GitHub `CLOSED` or `MERGED` closes the bead, including locally claimed work |
 
@@ -225,6 +229,8 @@ Supported scopes are inventory selectors, rather than arbitrary search queries:
 
 For example, set `GH_SYNC_QUERY='user:@me;org:example-team;repo:another-owner/project'` for overlapping scopes; duplicates are imported once. Both issues and PRs are always included. Search qualifiers such as `label:` or `is:open` are rejected.
 
+For a selected run, use `uv run --locked beads-hub-sync --repo example/api --repo example/web`, or `task sync-now -- --repo example/api --full` in Compose. Repeated `--repo` flags replace configured scopes for that command and also work with `--loop`. MCP clients can call `trigger_github_sync` with `{"repositories": ["example/api", "example/web"]}`; omitting the list uses configured scopes. Unselected imports and checkpoints are retained. To persist selection for the periodic worker, configure `GH_SYNC_QUERY` with explicit `repo:` scopes. See [repository selection](docs/usage.md#select-repositories).
+
 The SQL password must remain available when loading Compose configuration for operational tasks. `task validate` uses the quiet Compose check so credentials are not printed. See [deployment guidance](docs/usage.md#deploy-with-docker-compose) for custom image tags, password rotation, and port configuration.
 
 ## Triage and agent access
@@ -342,7 +348,7 @@ The smoke workflow uses synthetic GitHub records with real Beads, Dolt, UI, and 
 
 ## Current scope and validation
 
-The current implementation has 96 passing offline tests, source/wheel build validation, native ARM64 macOS embedded Dolt/concurrent polling/stdio/persistence validation, and an ARM64 Compose smoke pass covering installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 build, full browser interaction suite, and backup/restore exercise remain unverified.
+The current implementation has 112 passing offline tests, source/wheel build validation, and native ARM64 macOS and AMD64 Linux embedded Dolt/concurrent polling/stdio/persistence validation. A prior ARM64 Compose smoke pass covers installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. The updated repository epic assertions await a Compose rerun because Docker is unavailable in the current validation environment. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 image build, full browser interaction suite, and backup/restore exercise remain unverified.
 
 Current boundaries include polling rather than webhooks, one shared backlog rather than tenant isolation or HA, selected source snapshots rather than complete conversations/diffs/history, and human/agent categorization rather than automatic classification. There is no GitHub write-back, automatic freshness alerting, or migration from the earlier SQLite application.
 

@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from beads_hub import sync
+
 
 def test_sync_status_outside_checkout(tmp_path: Path) -> None:
     """Read polling progress through the installed command without GitHub or source-path setup."""
@@ -71,3 +73,32 @@ def test_command_help_outside_checkout(tmp_path: Path, command: str) -> None:
         timeout=30,
     )
     assert "usage:" in result.stdout and command in result.stdout
+
+
+def test_selected_repository_cli(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Repeated repository flags and full repairs reach the sync runner together."""
+    monkeypatch.setattr(
+        "sys.argv", ["beads-hub-sync", "--repo", "a/one", "--repo", "b/two", "--full"]
+    )
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> dict[str, str]:
+        """Capture one requested pass without network or database access."""
+        calls.append(kwargs)
+        return {"status": "complete"}
+
+    monkeypatch.setattr(sync, "run_sync", run)
+    with pytest.raises(SystemExit) as error:
+        sync.main()
+    assert error.value.code == 0
+    assert calls == [{"repositories": ["a/one", "b/two"], "force_full": True}]
+    assert json.loads(capsys.readouterr().out)["status"] == "complete"
+
+
+@pytest.mark.parametrize("names", [[], [""], ["repo:a/b"], ["a"], ["a/"], ["/b"], ["a/b;org:c"]])
+def test_invalid_repository_selection(names: list[str]) -> None:
+    """Empty selections and scope injection cannot fall back to the full portfolio."""
+    with pytest.raises(ValueError, match="OWNER/REPO"):
+        sync.repository_scopes(names)

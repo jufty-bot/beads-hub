@@ -6,6 +6,7 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | --- | --- | --- |
 | Standalone Beads repository | Implemented in [jufty-bot/beads-hub](https://github.com/jufty-bot/beads-hub) | Independent implementation history; no SQLite migration |
 | Multi-repository issue/PR sync | Implemented with GitHubKit, overlapping incremental cursors, node identities, and hourly full repairs | Bootstrap covers open work; repairs retain all-state deltas to cover changed closed records; credential visibility applies |
+| Repository epics and selective sync | Implemented with stable repository epics, imported child parenting, repeatable CLI `--repo`, and MCP `repositories` | Persistent selection uses `GH_SYNC_QUERY`; existing/closed imports migrate on a successful repository pass; unselected snapshots and checkpoints are retained |
 | Continuous lifecycle convergence | Implemented with independent PR signal refresh, replay after partial failures, and explicit closure verification | Serial writes; optional 2–4 read workers; repository indexes, pass-local graph reads, and one progress commit per pass |
 | GitHub progress visibility | Implemented in atomic shared-volume JSON state and `task sync-status` | Last successful coverage/errors per repository and durable rate cooldowns; database health alone is insufficient |
 | Automatic freshness alerts | Pending | Alert on stale/failed source coverage independently of database health |
@@ -16,7 +17,7 @@ The first milestone is an independently runnable Beads backlog that treats GitHu
 | Local embedded Dolt and stdio MCP | Implemented as the local default with repository-local storage and no SQL listener | Current-directory or explicit workspace; native ARM64 initialization, concurrent poller/MCP access, shared locking, and persistence verified with `task smoke-local` |
 | Python source package and uv workflows | Implemented in `src/beads_hub` with the uv build backend and installed sync/MCP/runtime commands | Locked editable development install, non-editable Docker install, source distribution and wheel via `task package` |
 | Unified image and Docker Compose deployment | Implemented | Four services, one persistent volume, localhost ports; operator supplies runtime credentials |
-| Runtime and regression validation | 96 offline tests, installed CLI and stdio default checks, source/wheel builds, operation-count and repair-coverage regressions, native ARM64 embedded Dolt concurrency/persistence validation, and Compose smoke coverage | Credentialed pilot, AMD64, and full browser interactions remain unverified; see checklist |
+| Runtime and regression validation | 112 offline tests, installed CLI and stdio default checks, source/wheel builds, operation-count and repair-coverage regressions, native ARM64 macOS and AMD64 Linux embedded Dolt validation, and prior Compose smoke coverage | Updated epic assertions await a Compose rerun; credentialed pilot, AMD64 image build, and full browser interactions remain unverified; see checklist |
 | Live multi-repository pilot | Pending | Needs an authorized GitHub credential and Docker host |
 | Backup/restore exercise | Pending | Requires storage/backup selection and a disposable restore target |
 
