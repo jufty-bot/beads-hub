@@ -2,7 +2,16 @@
 
 ## Development
 
-Python 3.11+, uv, Task, and Docker with the Compose plugin are required for the full validation workflow. `task install` runs `uv sync --locked`. `task fix`, `task lint`, `task check`, and `task test` cover formatting, lint, shell syntax, types, and token-free behavior tests. `task run -- <command>` runs inside the locked environment.
+Python 3.11+, uv, Task, and Docker with the Compose plugin are required for the full validation workflow. `task install` runs `uv sync --locked`, installing the `src/beads_hub` package editable and its development dependencies. `task fix`, `task lint`, `task check`, and `task test` cover formatting, lint, shell syntax, types, and token-free behavior tests. `task run -- <command>` runs inside the locked environment. `task package` uses `uv build --no-sources` to build the source distribution and wheel in `dist/`; `task build` still builds the Docker image.
+
+The package installs three commands: `beads-hub-sync` for one-shot/periodic sync and progress inspection, `beads-hub-mcp` for the official MCP HTTP/SSE server, and `beads-hub-runtime` for readiness and SQL account setup. From the checkout, run them through uv or the Task wrapper:
+
+```sh
+task run -- beads-hub-sync --help
+uv run --locked beads-hub-sync --status
+```
+
+These commands use the existing workspace and runtime environment variables; running sync or MCP locally requires an initialized hub and matching `bd` CLI. Docker installs the package non-editable with runtime dependencies only, then starts the same commands directly. No `PYTHONPATH` configuration is required.
 
 `task smoke` builds `beads-hub:test`, starts the checked-in Compose stack under a disposable project name with its own volume, and removes them on exit. It uses synthetic GitHub data with real Beads, Dolt, UI, and MCP processes. It verifies readiness, dependencies, claims, local fields, closure, reopening, renames, HTTP access, a separate remote SQL pointer, and restart persistence. It requires no GitHub token and publishes temporary localhost ports instead of the normal fixed ports. Its cleanup removes only the test project and volume. Do not run `tests/smoke_runtime.py` against a real hub: it intentionally writes its synthetic backlog.
 

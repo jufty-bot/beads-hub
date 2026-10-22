@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Reconcile credential-visible GitHub issues and PRs into a shared Beads backlog.
 
 GitHub owns source text, source labels, and closure. Humans own priority, assignee,
@@ -21,8 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from github_source import GitHub, RateLimited
-from sync_state import SyncState
+from beads_hub.github import GitHub, RateLimited
+from beads_hub.state import SyncState
 
 Json = dict[str, Any]
 """JSON objects exchanged with GitHub and bd."""

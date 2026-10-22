@@ -9,14 +9,15 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-import gh_global_sync as sync
 import httpx
 import pytest
 from fixtures import item, repository
-from github_source import GitHub, Json, RateLimited, node_metadata, source_metadata
 from githubkit import GitHub as Client
-from sync_state import FULL_SCAN_SECONDS, OVERLAP_SECONDS, SyncState
 from test_sync import MemoryBeads
+
+from beads_hub import sync
+from beads_hub.github import GitHub, Json, RateLimited, node_metadata, source_metadata
+from beads_hub.state import FULL_SCAN_SECONDS, OVERLAP_SECONDS, SyncState
 
 
 def source(handler: Callable[[httpx.Request], httpx.Response], *, workers: int = 1) -> GitHub:

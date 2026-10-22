@@ -24,8 +24,11 @@ task install
 task lint
 task check
 task test
+task package  # Builds the Python source distribution and wheel with uv
 task smoke  # Builds the image; tests a disposable stack without GitHub credentials
 ```
+
+Python code lives in `src/beads_hub`, installed by `uv sync --locked` (`task install`). Run its commands with `uv run --locked beads-hub-sync --help` or `task run -- beads-hub-sync --help`. Docker and Compose use the same installed sync, MCP, and runtime commands.
 
 Inject `GH_TOKEN` and `BEADS_REMOTE_PASSWORD` into your shell environment, set `GH_SYNC_QUERY` for your repositories, then run `task deploy` (or `docker compose up -d --build --wait`). Docker Compose starts Dolt, UI, official MCP, and sync with a shared persistent volume. UI (`3000`), MCP (`8080`), and SQL (`3307`) are available on localhost. See [Usage](docs/usage.md) for setup and operating commands.
 

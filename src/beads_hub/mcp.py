@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Serve the official beads-mcp tools and resources over HTTP or SSE."""
 
 from __future__ import annotations
@@ -6,9 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from beads_mcp.server import mcp
-from gh_global_sync import run_sync
-from hub_runtime import wait_for_hub
+from beads_mcp.server import mcp as mcp
+
+from beads_hub.runtime import wait_for_hub
+from beads_hub.sync import run_sync
 
 
 @mcp.tool(
@@ -20,7 +20,8 @@ def trigger_github_sync() -> dict[str, Any]:
     return run_sync()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Wait for initialization and serve the official MCP instance on the configured transport."""
     wait_for_hub()
     transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
     if transport not in {"streamable-http", "sse"}:
@@ -30,3 +31,7 @@ if __name__ == "__main__":
         host=os.environ.get("MCP_HOST", "0.0.0.0"),
         port=int(os.environ.get("MCP_PORT", "8080")),
     )
+
+
+if __name__ == "__main__":
+    main()

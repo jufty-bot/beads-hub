@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Wait for Dolt or the initialized hub before starting a dependent service."""
 
 from __future__ import annotations
@@ -76,7 +75,8 @@ def wait_for_hub(*, sql_only: bool = False, timeout: float = 120) -> None:
     raise TimeoutError("Dolt or hub initialization did not become ready within the startup timeout")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Wait for a runtime dependency or provision database-scoped remote access."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sql", action="store_true", help="Wait only for the SQL listener")
     parser.add_argument(
@@ -87,3 +87,7 @@ if __name__ == "__main__":
         configure_remote_access()
     else:
         wait_for_hub(sql_only=args.sql)
+
+
+if __name__ == "__main__":
+    main()

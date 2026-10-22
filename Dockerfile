@@ -29,7 +29,10 @@ WORKDIR /opt/beads-hub
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project --python /usr/bin/python3
 RUN npm install -g "beads-ui@${BEADS_UI_VERSION}" && npm cache clean --force
-COPY scripts/ /usr/local/bin/
+COPY README.md ./
+COPY src/ ./src/
+RUN uv sync --locked --no-dev --no-editable --python /usr/bin/python3
+COPY scripts/*.sh /usr/local/bin/
 ENV PATH="/opt/beads-hub/.venv/bin:$PATH" \
     BEADS_PATH=/usr/local/bin/bd \
     BEADS_WORKING_DIR=/var/lib/beads \

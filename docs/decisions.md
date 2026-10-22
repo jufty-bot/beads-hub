@@ -24,6 +24,10 @@ Source labels are namespaced and escaped. The hub updates its own label namespac
 
 The client disables persistent HTTP caching and automatic SDK retries. Failed reads preserve the last good snapshot, and API cooldowns defer subsequent requests without blocking the process through a reset. Closing-reference cursors remain explicit so repeated cursors fail visibly. Selected source facts live in `metadata.hub.github`, never local assignee/priority/notes. Reviewer detail is bounded with explicit coverage rather than adding unbounded review/conversation ingestion.
 
+## Install Python as a uv package
+
+Application modules live under `src/beads_hub`, using the [uv build backend](https://docs.astral.sh/uv/concepts/build-backend/) and its standard source layout. Console entrypoints replace executable Python files copied into `/usr/local/bin`. Development uses a locked editable install; Docker uses a locked non-editable install with runtime dependencies only, following [uv's container guidance](https://docs.astral.sh/uv/guides/integration/docker/). Tests and runtime services import the same package without source-path overrides. Shell helpers remain in `scripts/`, and `task package` builds distributions independently of the Docker build. Source identities, polling state, and Beads storage contracts do not change.
+
 ## Keep a small incremental poller
 
 The deployment uses polling with a few-minute freshness target. GitHubKit remains the source adapter; no additional connector platform or SQLite mirror is introduced. A single atomic JSON file holds repository cursors, successful coverage times, errors, and rate cooldowns. Cursors advance after both source projection and graph writes succeed so replay repairs partial database changes. Five-minute overlap and hourly full reconciliation address timestamp ties and missed/late updates. PR signals refresh independently of REST cursors; issue timestamps alone cannot establish current CI or mergeability. See [polling contracts](architecture.md#incremental-polling-and-progress).

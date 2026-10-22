@@ -15,11 +15,12 @@ from pathlib import Path
 
 from fastmcp import Client
 from fixtures import FixtureGitHub, item, repository
-from gh_global_sync import Beads, reconcile
-from github_source import node_metadata
-from hub_runtime import wait_for_hub
-from sync_state import SyncState
 from websockets.asyncio.client import connect
+
+from beads_hub.github import node_metadata
+from beads_hub.runtime import wait_for_hub
+from beads_hub.state import SyncState
+from beads_hub.sync import Beads, reconcile
 
 
 def main() -> None:

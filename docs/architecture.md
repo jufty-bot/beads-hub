@@ -1,6 +1,8 @@
 # Architecture and contracts
 
-`scripts/github_source.py` contains the read-only GitHubKit adapter. It uses synchronous REST and GraphQL calls, with SDK-managed authentication, HTTP sessions, and REST Link pagination; it does not invoke `gh`. `scripts/gh_global_sync.py` contains the `Beads` CLI adapter and reconciliation policy. Runtime coordination lives in `hub_runtime.py` and the entrypoints. The official beads-mcp instance owns all standard tool schemas, resource registration, and workspace context handling. The hub wrapper adds one synchronous trigger; it does not reimplement official tools.
+Python lives in the installable `src/beads_hub` package. `github.py` contains the read-only GitHubKit adapter. It uses synchronous REST and GraphQL calls, with SDK-managed authentication, HTTP sessions, and REST Link pagination; it does not invoke `gh`. `sync.py` contains the `Beads` CLI adapter and reconciliation policy, `state.py` persists polling progress, and `runtime.py` handles readiness and SQL provisioning. `mcp.py` serves the official beads-mcp instance, which owns all standard tool schemas, resource registration, and workspace context handling. The hub wrapper adds one synchronous trigger; it does not reimplement official tools.
+
+`pyproject.toml` declares the `uv_build` backend and console entrypoints `beads-hub-sync`, `beads-hub-mcp`, and `beads-hub-runtime`. `uv sync --locked` installs the package editable for development; tests import that package without adding source directories to Python's search path. The Docker image installs the package non-editable with locked runtime dependencies, and Compose and shell entrypoints invoke its installed commands. `scripts/` contains only shell startup and smoke helpers. `task package` builds a source distribution and wheel with uv.
 
 ## Storage and identity
 
@@ -50,7 +52,7 @@ For an indexed closing issue, `bd dep add ISSUE_ID PR_ID` means the issue depend
 
 ## Incremental polling and progress
 
-`scripts/sync_state.py` owns `/var/lib/beads/.github-sync-state.json`, a versioned progress document on the shared volume. A missing file bootstraps with a full open inventory. Each subsequent pass queries REST issues with `state=all&since=CHECKPOINT_MINUS_300_SECONDS`, including PRs and terminal updates. The checkpoint is the local wall-clock time immediately before reading that repository, never the largest returned source date. Timestamp overlap makes repeats harmless. Malformed state fails visibly rather than resetting coverage silently; clock rollback forces a full repair.
+`src/beads_hub/state.py` owns `/var/lib/beads/.github-sync-state.json`, a versioned progress document on the shared volume. A missing file bootstraps with a full open inventory. Each subsequent pass queries REST issues with `state=all&since=CHECKPOINT_MINUS_300_SECONDS`, including PRs and terminal updates. The checkpoint is the local wall-clock time immediately before reading that repository, never the largest returned source date. Timestamp overlap makes repeats harmless. Malformed state fails visibly rather than resetting coverage silently; clock rollback forces a full repair.
 
 Every pass also refreshes all known source-open PRs by node ID, independently of REST update timestamps. GraphQL supplies current body/title, latest commit rollup, review decision, mergeability, draft flag, and all closing references. If a PR is absent from the REST delta, its last-known REST metadata and source labels are retained. This avoids assuming that CI, reviews, and mergeability can be inferred from an issue update timestamp.
 

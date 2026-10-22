@@ -6,7 +6,8 @@ import subprocess
 from typing import Any
 
 import pytest
-from hub_runtime import configure_remote_access
+
+from beads_hub.runtime import configure_remote_access
 
 
 def test_remote_password_passed_only_on_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
