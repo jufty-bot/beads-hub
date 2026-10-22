@@ -4,6 +4,12 @@ Python lives in the installable `src/beads_hub` package. `github.py` contains th
 
 `pyproject.toml` declares the `uv_build` backend and console entrypoints `beads-hub-sync`, `beads-hub-mcp`, and `beads-hub-runtime`. `uv sync --locked` installs the package editable for development; tests import that package without adding source directories to Python's search path. The Docker image installs the package non-editable with locked runtime dependencies, and Compose and shell entrypoints invoke its installed commands. `scripts/` contains only shell startup and smoke helpers. `task package` builds a source distribution and wheel with uv.
 
+## Native local deployment
+
+The [local workflow](local.md) uses the same package and database contract with native Dolt/Beads binaries. A dedicated workspace holds connection metadata, SQL data, and polling progress. Dolt runs on a loopback listener; one separate uv polling process maintains GitHub coverage. Each MCP client launches `beads-hub-mcp` with `MCP_TRANSPORT=stdio` and identical workspace/SQL settings. Stdio starts no HTTP listener and receives no HTTP bind options. Startup still waits for an initialized hub, logs use stderr, and the official tools/resource and synchronous sync trigger are retained.
+
+Client sessions do not own the database or poller's lifetime. Native manual, periodic, and MCP-triggered sync share the same workspace lock and progress file. A host pointer to a Compose database is a different filesystem workspace: it does not share the container's lock/progress, so source sync for that database stays inside Compose. Native setup uses local SQL access and does not provision the Compose remote account. The local guide documents initialization, client environment, process shutdown, and persistence.
+
 ## Storage and identity
 
 Compose's named `data` volume mounts at `/var/lib/beads` in every container. `.beads/metadata.json` points to the explicit `beads_hub` SQL database. Dolt's actual data directory is `/var/lib/beads/dolt`, outside `.beads`: precreating `.beads/dolt` before `bd init` is interpreted as a legacy workspace by Beads 1.3.1. The UI container initializes once after the external SQL listener is available. MCP waits for a successful `bd info`. All clients disable auto-start and use the one external server. `docker compose down` retains the volume for the next startup.

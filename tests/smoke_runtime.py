@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastmcp import Client
 from fixtures import FixtureGitHub, item, repository
+from smoke_stdio import check_stdio
 from websockets.asyncio.client import connect
 
 from beads_hub.github import node_metadata
@@ -110,6 +111,7 @@ def main() -> None:
     assert len(beads.items()) == 2
     assert all("example/renamed#" in row["external_ref"] for row in beads.items())
     asyncio.run(check_http())
+    asyncio.run(check_stdio())
     print(
         json.dumps(
             {
@@ -125,6 +127,7 @@ def main() -> None:
                     "upstream closure",
                     "upstream reopening",
                     "repository rename",
+                    "stdio MCP tools, resource, and sync trigger",
                 ],
             }
         )

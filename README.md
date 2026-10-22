@@ -11,6 +11,7 @@ GitHub supplies source facts; Beads stores local triage and workflow decisions. 
 - [Work items and metadata](#work-items-and-metadata)
 - [How synchronization works](#how-synchronization-works)
 - [Quick start](#quick-start)
+- [Local Dolt and stdio](#local-dolt-and-stdio)
 - [Configuration](#configuration)
 - [Triage and agent access](#triage-and-agent-access)
 - [Operations and troubleshooting](#operations-and-troubleshooting)
@@ -171,6 +172,20 @@ The credential needs read access to selected repositories and their issues, pull
 
 Check the initial import with `task sync-status` and `docker compose logs --tail=20 github-reconciler`. A healthy database does not establish GitHub freshness.
 
+## Local Dolt and stdio
+
+The core backlog also runs natively with Python/uv, `bd`, and a local Dolt server. Use a dedicated workspace, keep Dolt and the GitHub poller running independently, and let each MCP client launch `beads-hub-mcp` with `MCP_TRANSPORT=stdio`. No Docker or HTTP listener is needed for this mode.
+
+After the [local setup](docs/local.md), the long-running processes are:
+
+| Process | Lifetime |
+| --- | --- |
+| `dolt sql-server` on `127.0.0.1` | Owns the local database; started separately |
+| `uv run --locked beads-hub-sync --loop --interval 120` | Keeps GitHub changes flowing into that database |
+| `MCP_TRANSPORT=stdio uv run --locked beads-hub-mcp` | Started and stopped by each MCP client |
+
+All processes share the same workspace and SQL settings, including the sync lock and checkpoints. Closing an MCP client does not stop Dolt or polling. The stdio wrapper retains the official Beads tools and the hub's sync trigger. See the [native bootstrap and copyable MCP configuration](docs/local.md#5-connect-a-stdio-mcp-client), including how to use stdio against a Compose-hosted database.
+
 ## Configuration
 
 Inject configuration into the environment used by Compose. Its default project is `beads-hub`, with persistent data in `beads-hub_data`.
@@ -183,7 +198,7 @@ Inject configuration into the environment used by Compose. Its default project i
 | `GH_SYNC_INTERVAL` | `120` | Positive pause in seconds after each automatic pass |
 | `GH_SYNC_WORKERS` | `1` | Independent GitHub node-read workers, from 1 to 4 |
 | `BEADS_UI_PORT` / `BEADS_MCP_PORT` / `BEADS_SQL_PORT` | `3000` / `8080` / `3307` | Host ports; container ports remain fixed |
-| `MCP_TRANSPORT` | `streamable-http` | Use `sse` for the legacy `/sse` endpoint |
+| `MCP_TRANSPORT` | `streamable-http` | Native clients can use `stdio`; use `sse` for legacy `/sse`. Compose's MCP service and health check use a network transport |
 | `IMAGE` | `beads-hub:test` | Shared image tag; with Task, select it using `IMAGE=...` as a task variable |
 
 Supported scopes are inventory selectors, rather than arbitrary search queries:
@@ -287,7 +302,7 @@ uv.lock             # Locked Python dependency resolution
 | Installed command | Purpose |
 | --- | --- |
 | `beads-hub-sync` | One-shot/periodic reconciliation, `--full` repair, and `--status` |
-| `beads-hub-mcp` | Start the official MCP HTTP/SSE server after hub readiness |
+| `beads-hub-mcp` | Start the official MCP stdio/HTTP/SSE server after hub readiness |
 | `beads-hub-runtime` | Wait for SQL/hub readiness or provision the remote SQL account |
 
 Use Task for the same flags and environment as the project workflows:
@@ -311,12 +326,13 @@ The smoke workflow uses synthetic GitHub records with real Beads, Dolt, UI, and 
 
 ## Current scope and validation
 
-The current implementation has 89 passing offline tests, source/wheel build validation, and an ARM64 Compose smoke pass covering installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources, authenticated remote SQL, and restart persistence. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 build, full browser interaction suite, and backup/restore exercise remain unverified.
+The current implementation has 93 passing offline tests, source/wheel build validation, native ARM64 macOS Dolt/stdio/restart validation, and an ARM64 Compose smoke pass covering installed commands, Beads lifecycle/graph behavior, UI WebSocket delivery, official MCP tools/resources over HTTP and stdio, authenticated remote SQL, and restart persistence. GitHub HTTP tests use synthetic responses. A credentialed multi-repository pilot, AMD64 build, full browser interaction suite, and backup/restore exercise remain unverified.
 
 Current boundaries include polling rather than webhooks, one shared backlog rather than tenant isolation or HA, selected source snapshots rather than complete conversations/diffs/history, and human/agent categorization rather than automatic classification. There is no GitHub write-back, automatic freshness alerting, or migration from the earlier SQLite application.
 
 - [Architecture and synchronization contracts](docs/architecture.md)
 - [Usage and deployment](docs/usage.md)
+- [Local Dolt and stdio setup](docs/local.md)
 - [Agent connections](AGENTS.md)
 - [Design decisions](docs/decisions.md)
 - [Roadmap](docs/roadmap.md) and [validation checklist](docs/checklist.md)

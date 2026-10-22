@@ -1,4 +1,4 @@
-"""Serve the official beads-mcp tools and resources over HTTP or SSE."""
+"""Serve the official beads-mcp tools and resources over stdio, HTTP, or SSE."""
 
 from __future__ import annotations
 
@@ -22,10 +22,13 @@ def trigger_github_sync() -> dict[str, Any]:
 
 def main() -> None:
     """Wait for initialization and serve the official MCP instance on the configured transport."""
-    wait_for_hub()
     transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
-    if transport not in {"streamable-http", "sse"}:
-        raise ValueError("MCP_TRANSPORT must be streamable-http or sse")
+    if transport not in {"stdio", "streamable-http", "sse"}:
+        raise ValueError("MCP_TRANSPORT must be stdio, streamable-http, or sse")
+    wait_for_hub()
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
     mcp.run(
         transport="sse" if transport == "sse" else "streamable-http",
         host=os.environ.get("MCP_HOST", "0.0.0.0"),

@@ -51,6 +51,8 @@ Dependencies drive readiness; a blocked issue may still have stored `status=open
 
 ## MCP agents
 
+For native local Dolt and a client-spawned stdio server, follow the [local setup](docs/local.md). Set `MCP_TRANSPORT=stdio` for `beads-hub-mcp` and provide the same workspace and SQL environment as the local poller. Dolt and polling run independently of MCP sessions; the wrapper retains the official tools and hub sync trigger.
+
 With the Compose stack running, connect to the official server over Streamable HTTP:
 
 ```json
@@ -69,6 +71,6 @@ The hub adds `trigger_github_sync`, a synchronous, locked reconciliation call. I
 
 Triggers share durable incremental checkpoints with the periodic worker. `modes` identifies full/delta reads and `writes` counts successful Beads mutations. Use `task sync-now -- --full` for an explicit repair and `task sync-status` for repository `last_success_at`, errors, and API cooldowns. A bead's stored `metadata.hub.github.observed_at` does not advance on unchanged polls. Optional `GH_SYNC_WORKERS=2`–`4` applies only to independent GitHub node reads; Beads/graph writes and checkpoint commits stay serial. The default is one read worker.
 
-For stdio, install the pinned official package with `uv tool install beads-mcp==1.3.1` and launch `beads-mcp` with the pointer environment above. Pass `BEADS_WORKING_DIR`, `BEADS_DIR`, the Dolt connection variables, and `BEADS_ACTOR` through your MCP client's environment configuration. Do not set `BEADS_DB` to a directory: that variable belongs to SQLite, whereas this hub uses Dolt metadata.
+For ordinary stdio access to a Compose-hosted database, install the pinned official package with `uv tool install beads-mcp==1.3.1` and launch `beads-mcp` with the pointer environment above. Pass `BEADS_WORKING_DIR`, `BEADS_DIR`, the Dolt connection variables, and `BEADS_ACTOR` through your MCP client's environment configuration. Host pointer workspaces have separate progress/locks, so trigger Compose sync through `task sync-now` or its HTTP MCP endpoint. Do not set `BEADS_DB` to a directory: that variable belongs to SQLite, whereas this hub uses Dolt metadata.
 
 The HTTP server and SQL endpoint are trusted control interfaces published on localhost. Apply your network and identity controls before exposing them beyond the Docker host. `context` may change workspace routing; do not use this deployment as a tenant isolation boundary.
